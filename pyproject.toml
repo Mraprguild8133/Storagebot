@@ -16,5 +16,5 @@ dependencies = [
     "uvicorn>=0.35.0",
     "humanize>=4.13.0",
     "psutil>=5.9.5",
-    "python-telegram-bot>=13.7",
+    "python-telegram-bot>=22.4",
 ]
