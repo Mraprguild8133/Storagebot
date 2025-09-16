@@ -28,7 +28,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 # --- Configuration ---
 # Replace 'YOUR_TELEGRAM_BOT_TOKEN' with the token you get from @BotFather
-TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+TELEGRAM_TOKEN = "8345094798:AAF69DkHwxNmHGZO8itDMsU_qcifncYxpVM"
 
 # The base API URL for the URL shortening service.
 SHORTENER_API_URL = "http://tinyurl.com/api-create.php"
