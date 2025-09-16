@@ -29,7 +29,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 # --- Configuration ---
 # Replace 'YOUR_TELEGRAM_BOT_TOKEN' with the token you get from @BotFather
-TELEGRAM_TOKEN = "TELEGRAM_BOT_TOKEN"
+TELEGRAM_TOKEN = "8345094798:AAF69DkHwxNmHGZO8itDMsU_qcifncYxpVM"
 
 # Supported URL shortening services
 SERVICES = {
