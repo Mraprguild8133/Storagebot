@@ -67,7 +67,7 @@ app = Client(
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    workers=20,
+    workers=10,  # Reduced workers for stability
     sleep_threshold=60
 )
 
@@ -169,31 +169,19 @@ async def status_command(client, message: Message):
 
 # --- File Handling Logic --- #
 @app.on_message(filters.private & (
-    filters.document | filters.video | filters.audio | 
-    filters.photo | filters.voice | filters.video_note
+    filters.document | filters.video | filters.audio
 ))
 async def handle_file(client, message: Message):
     """Handler for incoming files"""
-    media = (message.document or message.video or message.audio or 
-             message.photo or message.voice or message.video_note)
+    media = message.document or message.video or message.audio
     
     if not media:
         await message.reply_text("Unsupported file type.")
         return
 
     # Get file info
-    if message.photo:
-        file_name = "photo.jpg"
-        file_size = media.file_size
-    elif message.voice:
-        file_name = "voice.ogg"
-        file_size = media.file_size
-    elif message.video_note:
-        file_name = "video_note.mp4"
-        file_size = media.file_size
-    else:
-        file_name = media.file_name or "Untitled"
-        file_size = media.file_size
+    file_name = media.file_name or "Untitled"
+    file_size = media.file_size
 
     # Telegram imposes a 4GB limit for bots
     if file_size and file_size > 4 * 1024 * 1024 * 1024:
@@ -243,23 +231,6 @@ async def handle_file(client, message: Message):
                 progress=progress_for_pyrogram, 
                 progress_args=("Uploading...", status_message, upload_start_time)
             )
-        elif message.photo:
-            sent_message = await client.send_photo(
-                chat_id=STORAGE_CHANNEL_ID, 
-                photo=downloaded_file_path, 
-                caption=f"`{file_name}`"
-            )
-        elif message.voice:
-            sent_message = await client.send_voice(
-                chat_id=STORAGE_CHANNEL_ID, 
-                voice=downloaded_file_path, 
-                caption=f"`{file_name}`"
-            )
-        elif message.video_note:
-            sent_message = await client.send_video_note(
-                chat_id=STORAGE_CHANNEL_ID, 
-                video_note=downloaded_file_path
-            )
             
         LOGGER.info(f"File uploaded successfully: {file_name}")
 
@@ -304,22 +275,16 @@ async def handle_file(client, message: Message):
         if 'status_message' in locals():
             progress_updates.pop(status_message.id, None)
 
-# --- Error Handler --- #
-@app.on_error()
-async def error_handler(_, update, error):
-    """Global error handler"""
-    if isinstance(error, FloodWait):
-        LOGGER.warning(f"FloodWait: Waiting for {error.x} seconds")
-        await asyncio.sleep(error.x)
-        return True
-    LOGGER.error(f"Unhandled error: {error}")
-    return False
-
 # --- Main Execution --- #
 async def main():
     """Starts the bot."""
     LOGGER.info("Starting the bot...")
-    await app.start()
+    
+    try:
+        await app.start()
+    except Exception as e:
+        LOGGER.critical(f"Failed to start bot: {e}")
+        return
     
     # Verify we can access the storage channel
     if not await verify_storage_channel(app):
@@ -337,7 +302,15 @@ async def main():
         LOGGER.warning(f"Could not send startup message: {e}")
     
     # Keep the bot running
-    await asyncio.Event().wait()
+    try:
+        await asyncio.Event().wait()
+    except KeyboardInterrupt:
+        LOGGER.info("Bot stopped manually.")
+    except Exception as e:
+        LOGGER.error(f"Unexpected error in main loop: {e}")
+    finally:
+        await app.stop()
+        LOGGER.info("Bot stopped successfully.")
 
 if __name__ == "__main__":
     # Check if we're running in an environment with all required variables
@@ -346,9 +319,5 @@ if __name__ == "__main__":
         value = os.environ.get(var)
         LOGGER.info(f"{var}: {'Set' if value else 'Missing'}")
     
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        LOGGER.info("Bot stopped manually.")
-    except Exception as e:
-        LOGGER.critical(f"An unhandled exception occurred: {e}", exc_info=True)
+    # Run the bot
+    asyncio.run(main())
