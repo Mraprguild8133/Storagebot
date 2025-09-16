@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 A Telegram bot that shortens URLs using the TinyURL service.
+This script is updated to use python-telegram-bot v20+ and the asyncio library.
 
 This bot does the following:
 1.  Responds to the /start command with a welcome message.
@@ -12,53 +13,51 @@ This bot does the following:
 7.  If it's not a URL, it informs the user to send a valid one.
 
 To use this bot:
-1.  Install the required libraries:
-    pip install python-telegram-bot==13.7 requests
+1.  Install the required libraries (the new version):
+    pip install python-telegram-bot --upgrade
+    pip install requests
 2.  Get a bot token from @BotFather on Telegram.
 3.  Replace 'YOUR_TELEGRAM_BOT_TOKEN' in this script with your actual token.
-4.  Run the script: python url_shortener_bot.py
+4.  Run the script: python modern_bot.py
 """
 
 import logging
 import requests
-from telegram import Update, ParseMode
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram import Update, constants
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # --- Configuration ---
 # Replace 'YOUR_TELEGRAM_BOT_TOKEN' with the token you get from @BotFather
 TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
 
-# The base API URL for the URL shortening service. TinyURL is simple and requires no API key.
-# You can swap this out with another service's API endpoint.
+# The base API URL for the URL shortening service.
 SHORTENER_API_URL = "http://tinyurl.com/api-create.php"
 
 # --- Bot Setup ---
 
 # Enable logging to see errors and bot activity
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
+# set higher logging level for httpx to avoid all GET and POST requests being logged
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # --- Command Handlers ---
 
-def start_command(update: Update, context: CallbackContext) -> None:
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends a welcome message when the /start command is issued."""
     user = update.effective_user
     welcome_message = (
         f"👋 *Welcome, {user.first_name}!* \n\n"
         "I am your friendly URL Shortener Bot. Just send me any long URL, and I will shorten it for you instantly.\n\n"
-        "Features:\n"
-        "✅ Simple to use\n"
-        "✅ Fast and reliable\n"
-        "✅ No API keys needed from you\n\n"
+        "This bot is running on the latest stable code.\n\n"
         "Type /help to see all available commands."
     )
-    update.message.reply_html(welcome_message)
+    await update.message.reply_html(welcome_message)
 
 
-def help_command(update: Update, context: CallbackContext) -> None:
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends a help message with instructions when the /help command is issued."""
     help_text = (
         "ℹ️ *How to Use Me*\n\n"
@@ -70,22 +69,21 @@ def help_command(update: Update, context: CallbackContext) -> None:
         "/start - Start the bot\n"
         "/help - Show this help message"
     )
-    update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text(help_text, parse_mode=constants.ParseMode.MARKDOWN)
 
 # --- Message Handler ---
 
-def shorten_url(update: Update, context: CallbackContext) -> None:
+async def shorten_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Shortens the URL sent by the user."""
     original_url = update.message.text
-    chat_id = update.message.chat_id
     
     # Simple validation to check if the message looks like a URL
     if not (original_url.startswith('http://') or original_url.startswith('https://')):
-        update.message.reply_text("❌ That doesn't look like a valid URL. Please send a link starting with `http://` or `https://`.", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("❌ That doesn't look like a valid URL. Please send a link starting with `http://` or `https://`.", parse_mode=constants.ParseMode.MARKDOWN)
         return
 
     # Inform the user that the process has started
-    processing_message = context.bot.send_message(chat_id, "⚙️ Shortening your URL, please wait...")
+    processing_message = await update.message.reply_text("⚙️ Shortening your URL, please wait...")
 
     try:
         # Prepare parameters for the API request
@@ -102,29 +100,22 @@ def shorten_url(update: Update, context: CallbackContext) -> None:
                 f"`{short_url}`\n\n"
                 f"🔗 *Original URL:*\n`{original_url}`"
             )
-            context.bot.edit_message_text(chat_id=chat_id, message_id=processing_message.message_id, text=message, parse_mode=ParseMode.MARKDOWN)
+            await processing_message.edit_text(message, parse_mode=constants.ParseMode.MARKDOWN)
         else:
             # Handle API errors
             error_message = f"⚠️ Sorry, I couldn't shorten that URL. The service returned an error (Status code: {response.status_code}). Please try again later."
-            context.bot.edit_message_text(chat_id=chat_id, message_id=processing_message.message_id, text=error_message)
+            await processing_message.edit_text(error_message)
 
     except requests.RequestException as e:
         # Handle network or connection errors
         logger.error(f"Network error when shortening URL: {e}")
         error_message = "🆘 Oops! A network error occurred. I couldn't connect to the URL shortening service. Please check your connection or try again later."
-        context.bot.edit_message_text(chat_id=chat_id, message_id=processing_message.message_id, text=error_message)
+        await processing_message.edit_text(error_message)
     except Exception as e:
         # Handle any other unexpected errors
         logger.error(f"An unexpected error occurred: {e}")
         error_message = "💥 An unexpected error occurred. Please try again."
-        context.bot.edit_message_text(chat_id=chat_id, message_id=processing_message.message_id, text=error_message)
-
-
-# --- Error Handler ---
-
-def error_handler(update: Update, context: CallbackContext) -> None:
-    """Log Errors caused by Updates."""
-    logger.warning(f'Update "{update}" caused error "{context.error}"')
+        await processing_message.edit_text(error_message)
 
 
 # --- Main Bot Execution ---
@@ -132,29 +123,20 @@ def error_handler(update: Update, context: CallbackContext) -> None:
 def main() -> None:
     """Start the bot and listen for commands and messages."""
     
-    # Create the Updater and pass it your bot's token.
-    updater = Updater(TELEGRAM_TOKEN)
-
-    # Get the dispatcher to register handlers
-    dispatcher = updater.dispatcher
+    # Create the Application and pass it your bot's token.
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
 
     # Register command handlers
-    dispatcher.add_handler(CommandHandler("start", start_command))
-    dispatcher.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
 
     # Register a message handler to process URLs
     # It filters for text messages that are not commands
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, shorten_url))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, shorten_url))
     
-    # Register the error handler
-    dispatcher.add_error_handler(error_handler)
-
     # Start the Bot
-    updater.start_polling()
-    logger.info("Bot has started successfully!")
-
-    # Run the bot until you press Ctrl-C
-    updater.idle()
+    logger.info("Bot is starting...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
     logger.info("Bot has been stopped.")
 
 
