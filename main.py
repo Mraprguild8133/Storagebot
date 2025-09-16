@@ -1,242 +1,162 @@
-import os
-import time
-import math
+# -*- coding: utf-8 -*-
+"""
+A Telegram bot that shortens URLs using the TinyURL service.
+
+This bot does the following:
+1.  Responds to the /start command with a welcome message.
+2.  Responds to the /help command with instructions.
+3.  Receives a message from a user.
+4.  Checks if the message is a valid URL.
+5.  If it's a URL, it uses the TinyURL API to shorten it.
+6.  Sends the shortened URL back to the user.
+7.  If it's not a URL, it informs the user to send a valid one.
+
+To use this bot:
+1.  Install the required libraries:
+    pip install python-telegram-bot==13.7 requests
+2.  Get a bot token from @BotFather on Telegram.
+3.  Replace 'YOUR_TELEGRAM_BOT_TOKEN' in this script with your actual token.
+4.  Run the script: python url_shortener_bot.py
+"""
+
 import logging
-from pyrogram import Client, filters
-from pyrogram.types import Message
-from pyrogram.errors import FloodWait
-import asyncio
+import requests
+from telegram import Update, ParseMode
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 
-# --- Configuration --- #
-# Set up logging to see informational messages
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-LOGGER = logging.getLogger(__name__)
+# --- Configuration ---
+# Replace 'YOUR_TELEGRAM_BOT_TOKEN' with the token you get from @BotFather
+TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
 
-# Fetch environment variables
-# To get these, go to my.telegram.org
-API_ID = os.environ.get("API_ID")
-API_HASH = os.environ.get("API_HASH")
-# Get this from @BotFather
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-# This is the ID of the channel where files will be stored.
-# Make sure your bot is an admin in this channel.
-# It can be a public channel username (@channel_name) or a private channel ID (e.g., -1001234567890).
-STORAGE_CHANNEL_ID_STR = os.environ.get("STORAGE_CHANNEL_ID")
+# The base API URL for the URL shortening service. TinyURL is simple and requires no API key.
+# You can swap this out with another service's API endpoint.
+SHORTENER_API_URL = "http://tinyurl.com/api-create.php"
 
-# --- Environment Variable Validation --- #
-if not all([API_ID, API_HASH, BOT_TOKEN, STORAGE_CHANNEL_ID_STR]):
-    LOGGER.critical("CRITICAL ERROR: One or more environment variables (API_ID, API_HASH, BOT_TOKEN, STORAGE_CHANNEL_ID) are missing.")
-    exit(1) # Exit if essential config is missing
+# --- Bot Setup ---
 
-try:
-    API_ID = int(API_ID)
-except ValueError:
-    LOGGER.critical("CRITICAL ERROR: API_ID is not a valid integer.")
-    exit(1)
-
-try:
-    STORAGE_CHANNEL_ID = int(STORAGE_CHANNEL_ID_STR)
-except ValueError:
-    # If it's not an integer, assume it's a public channel username like @channelname
-    STORAGE_CHANNEL_ID = STORAGE_CHANNEL_ID_STR
-
-
-# --- Pyrogram Client Initialization --- #
-# Create a new Pyrogram client
-# The "bot" name is the session file name.
-app = Client(
-    "bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
-    workers=20 # Number of concurrent workers for handling updates
+# Enable logging to see errors and bot activity
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
-# --- Progress Callback --- #
-# A dictionary to keep track of the last update time for each task
-progress_updates = {}
+# --- Command Handlers ---
 
-async def progress_for_pyrogram(current, total, ud_type, message: Message, start_time):
-    """
-    Custom progress callback to show real-time status of uploads/downloads.
-    """
-    task_id = message.id
-    now = time.time()
+def start_command(update: Update, context: CallbackContext) -> None:
+    """Sends a welcome message when the /start command is issued."""
+    user = update.effective_user
+    welcome_message = (
+        f"👋 *Welcome, {user.first_name}!* \n\n"
+        "I am your friendly URL Shortener Bot. Just send me any long URL, and I will shorten it for you instantly.\n\n"
+        "Features:\n"
+        "✅ Simple to use\n"
+        "✅ Fast and reliable\n"
+        "✅ No API keys needed from you\n\n"
+        "Type /help to see all available commands."
+    )
+    update.message.reply_html(welcome_message)
 
-    # Update progress only once every 2 seconds to avoid flooding Telegram's API
-    if task_id in progress_updates and (now - progress_updates[task_id]) < 2:
-        return
+
+def help_command(update: Update, context: CallbackContext) -> None:
+    """Sends a help message with instructions when the /help command is issued."""
+    help_text = (
+        "ℹ️ *How to Use Me*\n\n"
+        "1.  **Send a URL:** Simply paste or type a long URL into the chat and send it.\n"
+        "    *Example:* `https://www.google.com/search?q=very+long+search+query`\n\n"
+        "2.  **Get a Short URL:** I will reply with a shortened URL from TinyURL.\n"
+        "    *Example:* `https://tinyurl.com/2p998z7j`\n\n"
+        "*Available Commands:*\n"
+        "/start - Start the bot\n"
+        "/help - Show this help message"
+    )
+    update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+
+# --- Message Handler ---
+
+def shorten_url(update: Update, context: CallbackContext) -> None:
+    """Shortens the URL sent by the user."""
+    original_url = update.message.text
+    chat_id = update.message.chat_id
     
-    progress_updates[task_id] = now
-    
-    diff = now - start_time
-    if diff == 0:
-        diff = 0.001 # Avoid division by zero
-
-    speed = current / diff
-    percentage = current * 100 / total
-    
-    # Visual progress bar
-    progress_bar = "[{0}{1}]".format(
-        ''.join(["⬢" for i in range(math.floor(percentage / 10))]),
-        ''.join(["⬡" for i in range(10 - math.floor(percentage / 10))])
-    )
-
-    # Human-readable file sizes
-    current_str = f"{current / (1024 * 1024):.2f} MB"
-    total_str = f"{total / (1024 * 1024):.2f} MB"
-    speed_str = f"{speed / 1024 / 1024:.2f} MB/s"
-
-    # ETA Calculation
-    eta_seconds = (total - current) / speed if speed > 0 else 0
-    eta = time.strftime("%H:%M:%S", time.gmtime(eta_seconds)) if eta_seconds > 0 else "00:00:00"
-
-    progress_message = (
-        f"**{ud_type}**\n"
-        f"{progress_bar} {percentage:.2f}%\n"
-        f"➢ **Done:** {current_str}\n"
-        f"➢ **Size:** {total_str}\n"
-        f"➢ **Speed:** {speed_str}\n"
-        f"➢ **ETA:** {eta}"
-    )
-
-    try:
-        # Edit the status message to show the new progress
-        await message.edit_text(progress_message)
-    except FloodWait as e:
-        # If we are rate-limited, wait for the specified duration
-        LOGGER.warning(f"FloodWait: waiting for {e.x} seconds.")
-        await asyncio.sleep(e.x)
-    except Exception as e:
-        # Log other errors if the message couldn't be edited
-        LOGGER.warning(f"Failed to edit progress message: {e}")
-
-
-# --- Bot Command Handlers --- #
-@app.on_message(filters.command("start") & filters.private)
-async def start_command(_, message: Message):
-    """
-    Handler for the /start command. Greets the user.
-    """
-    await message.reply_text(
-        "👋 **Hello! I am your personal file storage assistant.**\n\n"
-        "Send me any file, and I will upload it to our storage channel and give you a shareable link.\n\n"
-        "**Features:**\n"
-        "• Handles files up to 4GB.\n"
-        "• High-speed uploads and downloads.\n"
-        "• Real-time progress tracking."
-    )
-
-@app.on_message(filters.command("help") & filters.private)
-async def help_command(_, message: Message):
-    """
-    Handler for the /help command. Provides instructions.
-    """
-    await message.reply_text(
-        "**How to use me:**\n\n"
-        "1. Simply send me any file (document, video, or audio).\n"
-        "2. Wait for the upload to complete. I will show you the progress.\n"
-        "3. Once finished, I will provide you with a link to the file in the storage channel."
-    )
-
-
-# --- File Handling Logic --- #
-@app.on_message(filters.private & (filters.document | filters.video | filters.audio))
-async def handle_file(_, message: Message):
-    """
-    Handler for incoming files (documents, videos, audio).
-    Downloads from the user and uploads to the storage channel.
-    """
-    media = message.document or message.video or message.audio
-    if not media:
-        await message.reply_text("Unsupported file type.")
+    # Simple validation to check if the message looks like a URL
+    if not (original_url.startswith('http://') or original_url.startswith('https://')):
+        update.message.reply_text("❌ That doesn't look like a valid URL. Please send a link starting with `http://` or `https://`.", parse_mode=ParseMode.MARKDOWN)
         return
 
-    file_name = media.file_name or "Untitled"
-    file_size = media.file_size
-    
-    # Telegram imposes a 4GB limit for bots on 64-bit systems.
-    if file_size > 4 * 1024 * 1024 * 1024:
-         await message.reply_text("❌ **Error:** File size is larger than 4GB, which is not supported by Telegram.")
-         return
+    # Inform the user that the process has started
+    processing_message = context.bot.send_message(chat_id, "⚙️ Shortening your URL, please wait...")
 
-    status_message = await message.reply_text("Initializing...", quote=True)
-    start_time = time.time()
-    downloaded_file_path = None
-    
     try:
-        # 1. Download the file from the user to the bot's server
-        LOGGER.info(f"Starting download for: {file_name}")
-        downloaded_file_path = await app.download_media(
-            message=message,
-            progress=progress_for_pyrogram,
-            progress_args=("Downloading...", status_message, start_time)
-        )
-        LOGGER.info(f"File downloaded to: {downloaded_file_path}")
-
-        # 2. Upload the file from the bot's server to the storage channel
-        upload_start_time = time.time()
-        LOGGER.info(f"Starting upload to channel {STORAGE_CHANNEL_ID} for: {file_name}")
+        # Prepare parameters for the API request
+        params = {'url': original_url}
         
-        # Determine which function to use for sending based on file type
-        if message.document:
-            sent_message = await app.send_document(
-                chat_id=STORAGE_CHANNEL_ID, document=downloaded_file_path, caption=f"`{file_name}`",
-                progress=progress_for_pyrogram, progress_args=("Uploading...", status_message, upload_start_time)
+        # Make the GET request to the shortening service API
+        response = requests.get(SHORTENER_API_URL, params=params)
+        
+        # Check if the request was successful
+        if response.status_code == 200:
+            short_url = response.text
+            message = (
+                f"✅ *Success! Here is your short URL:*\n\n"
+                f"`{short_url}`\n\n"
+                f"🔗 *Original URL:*\n`{original_url}`"
             )
-        elif message.video:
-             sent_message = await app.send_video(
-                chat_id=STORAGE_CHANNEL_ID, video=downloaded_file_path, caption=f"`{file_name}`",
-                progress=progress_for_pyrogram, progress_args=("Uploading...", status_message, upload_start_time)
-            )
-        else: # Audio
-            sent_message = await app.send_audio(
-                chat_id=STORAGE_CHANNEL_ID, audio=downloaded_file_path, caption=f"`{file_name}`",
-                progress=progress_for_pyrogram, progress_args=("Uploading...", status_message, upload_start_time)
-            )
-        LOGGER.info(f"File uploaded successfully: {file_name}")
+            context.bot.edit_message_text(chat_id=chat_id, message_id=processing_message.message_id, text=message, parse_mode=ParseMode.MARKDOWN)
+        else:
+            # Handle API errors
+            error_message = f"⚠️ Sorry, I couldn't shorten that URL. The service returned an error (Status code: {response.status_code}). Please try again later."
+            context.bot.edit_message_text(chat_id=chat_id, message_id=processing_message.message_id, text=error_message)
 
-        # 3. Generate the shareable link
-        share_link = sent_message.link if sent_message.link else "Private channel, direct forwarding is used."
-
-        # 4. Send the final success message with the link
-        success_text = (
-            f"✅ **File Uploaded Successfully!**\n\n"
-            f"**File Name:** `{file_name}`\n"
-            f"**Share Link:** {share_link}"
-        )
-        await status_message.edit_text(success_text)
-
-        # For private channels, forward the message to the user for easy access.
-        if not sent_message.link:
-            await sent_message.forward(message.chat.id)
-
+    except requests.RequestException as e:
+        # Handle network or connection errors
+        logger.error(f"Network error when shortening URL: {e}")
+        error_message = "🆘 Oops! A network error occurred. I couldn't connect to the URL shortening service. Please check your connection or try again later."
+        context.bot.edit_message_text(chat_id=chat_id, message_id=processing_message.message_id, text=error_message)
     except Exception as e:
-        LOGGER.error(f"An error occurred while handling file '{file_name}': {e}", exc_info=True)
-        await status_message.edit_text("❌ **Error:** An unexpected error occurred. Please check the logs or try again later.")
-    finally:
-        # 5. Clean up by deleting the downloaded file from the server
-        if downloaded_file_path and os.path.exists(downloaded_file_path):
-            os.remove(downloaded_file_path)
-            LOGGER.info(f"Cleaned up local file: {downloaded_file_path}")
-        # Clear the progress tracker for this task
-        if 'status_message' in locals():
-            progress_updates.pop(status_message.id, None)
+        # Handle any other unexpected errors
+        logger.error(f"An unexpected error occurred: {e}")
+        error_message = "💥 An unexpected error occurred. Please try again."
+        context.bot.edit_message_text(chat_id=chat_id, message_id=processing_message.message_id, text=error_message)
 
-# --- Main Execution --- #
-async def main():
-    """Starts the bot."""
-    LOGGER.info("Starting the bot...")
-    await app.start()
-    user_bot = await app.get_me()
-    LOGGER.info(f"Bot started as @{user_bot.username}")
-    # Keep the bot running
-    await asyncio.Event().wait()
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        LOGGER.info("Bot stopped manually.")
-    except Exception as e:
-        LOGGER.critical(f"An unhandled exception occurred at the top level: {e}", exc_info=True)
+# --- Error Handler ---
+
+def error_handler(update: Update, context: CallbackContext) -> None:
+    """Log Errors caused by Updates."""
+    logger.warning(f'Update "{update}" caused error "{context.error}"')
+
+
+# --- Main Bot Execution ---
+
+def main() -> None:
+    """Start the bot and listen for commands and messages."""
+    
+    # Create the Updater and pass it your bot's token.
+    updater = Updater(TELEGRAM_TOKEN)
+
+    # Get the dispatcher to register handlers
+    dispatcher = updater.dispatcher
+
+    # Register command handlers
+    dispatcher.add_handler(CommandHandler("start", start_command))
+    dispatcher.add_handler(CommandHandler("help", help_command))
+
+    # Register a message handler to process URLs
+    # It filters for text messages that are not commands
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, shorten_url))
+    
+    # Register the error handler
+    dispatcher.add_error_handler(error_handler)
+
+    # Start the Bot
+    updater.start_polling()
+    logger.info("Bot has started successfully!")
+
+    # Run the bot until you press Ctrl-C
+    updater.idle()
+    logger.info("Bot has been stopped.")
+
+
+if __name__ == '__main__':
+    main()
