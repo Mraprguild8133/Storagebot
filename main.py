@@ -5,7 +5,7 @@ import logging
 import asyncio
 from pyrogram import Client, filters, __version__ as pyrogram_version
 from pyrogram.types import Message
-from pyrogram.errors import FloodWait, ChannelInvalid, ChannelPrivate, ChatAdminRequired
+from pyrogram.errors import FloodWait, ChannelInvalid, ChannelPrivate, ChatAdminRequired, PeerIdInvalid
 
 # --- Configuration --- #
 # Set up logging to see informational messages
@@ -32,10 +32,8 @@ except ValueError:
     LOGGER.critical("CRITICAL ERROR: API_ID is not a valid integer.")
     exit(1)
 
-try:
-    STORAGE_CHANNEL_ID = int(STORAGE_CHANNEL_ID_STR)
-except ValueError:
-    STORAGE_CHANNEL_ID = STORAGE_CHANNEL_ID_STR
+# Keep channel ID as string for now, we'll validate it later
+STORAGE_CHANNEL_ID = STORAGE_CHANNEL_ID_STR
 
 # --- Utility Functions --- #
 def human_readable_size(size_bytes):
@@ -51,10 +49,27 @@ def human_readable_size(size_bytes):
 async def verify_storage_channel(client):
     """Verify the bot has access to the storage channel"""
     try:
-        chat = await client.get_chat(STORAGE_CHANNEL_ID)
-        LOGGER.info(f"Storage channel verified: {chat.title}")
+        # Try to convert to integer if it's a numeric string
+        try:
+            channel_id = int(STORAGE_CHANNEL_ID)
+            chat = await client.get_chat(channel_id)
+        except ValueError:
+            # It's a username like @channelname
+            chat = await client.get_chat(STORAGE_CHANNEL_ID)
+        
+        LOGGER.info(f"Storage channel verified: {chat.title} (ID: {chat.id})")
+        
+        # Check if bot has permission to send messages
+        try:
+            await client.send_message(chat.id, "🤖 Bot connectivity test")
+            LOGGER.info("Bot can send messages to the channel")
+        except Exception as e:
+            LOGGER.warning(f"Bot may not have send permission: {e}")
+            return False
+            
         return True
-    except (ChannelInvalid, ChannelPrivate, ChatAdminRequired) as e:
+        
+    except (ChannelInvalid, ChannelPrivate, ChatAdminRequired, PeerIdInvalid) as e:
         LOGGER.error(f"Bot doesn't have access to storage channel: {e}")
         return False
     except Exception as e:
@@ -67,7 +82,7 @@ app = Client(
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    workers=10,  # Reduced workers for stability
+    workers=5,  # Reduced workers for stability
     sleep_threshold=60
 )
 
@@ -144,7 +159,7 @@ async def help_command(client, message: Message):
     """Handler for the /help command"""
     await message.reply_text(
         "**How to use me:**\n\n"
-        "1. Simply send me any file (document, video, audio, photo, voice, or video note)\n"
+        "1. Simply send me any file (document, video, or audio)\n"
         "2. Wait for the upload to complete. I will show you the progress\n"
         "3. Once finished, I will provide you with a link to the file in the storage channel\n\n"
         "**Note:** Files larger than 4GB cannot be handled due to Telegram limitations."
@@ -154,15 +169,31 @@ async def help_command(client, message: Message):
 async def status_command(client, message: Message):
     """Check bot status and storage channel accessibility"""
     try:
-        chat = await client.get_chat(STORAGE_CHANNEL_ID)
+        # Try to convert to integer if it's a numeric string
+        try:
+            channel_id = int(STORAGE_CHANNEL_ID)
+            chat = await client.get_chat(channel_id)
+        except ValueError:
+            # It's a username like @channelname
+            chat = await client.get_chat(STORAGE_CHANNEL_ID)
+            
         status = "✅ Connected" if chat else "❌ Not accessible"
         await message.reply_text(
             f"🤖 **Bot Status**\n\n"
             f"**Storage Channel:** {status}\n"
             f"**Channel Name:** {chat.title if chat else 'N/A'}\n"
-            f"**Channel ID:** `{STORAGE_CHANNEL_ID}`\n"
+            f"**Channel ID:** `{chat.id if chat else STORAGE_CHANNEL_ID}`\n"
             f"**Pyrogram Version:** {pyrogram_version}\n\n"
             f"*Send a file to test upload functionality.*"
+        )
+    except (ChannelInvalid, ChannelPrivate, ChatAdminRequired, PeerIdInvalid) as e:
+        await message.reply_text(
+            f"❌ **Cannot access storage channel:** {e}\n\n"
+            f"**Please make sure:**\n"
+            f"1. The channel ID is correct\n"
+            f"2. The bot is added as admin to the channel\n"
+            f"3. The bot has permission to send messages\n"
+            f"**Current channel ID:** `{STORAGE_CHANNEL_ID}`"
         )
     except Exception as e:
         await message.reply_text(f"❌ **Error accessing storage channel:** {str(e)}")
@@ -173,6 +204,23 @@ async def status_command(client, message: Message):
 ))
 async def handle_file(client, message: Message):
     """Handler for incoming files"""
+    # First check if we can access the storage channel
+    try:
+        # Try to convert to integer if it's a numeric string
+        try:
+            channel_id = int(STORAGE_CHANNEL_ID)
+            await client.get_chat(channel_id)
+        except ValueError:
+            # It's a username like @channelname
+            await client.get_chat(STORAGE_CHANNEL_ID)
+    except Exception as e:
+        await message.reply_text(
+            f"❌ **Cannot access storage channel:** {e}\n\n"
+            "Please make sure the bot is added as admin to the channel "
+            "and has permission to send messages."
+        )
+        return
+
     media = message.document or message.video or message.audio
     
     if not media:
@@ -286,23 +334,25 @@ async def main():
         LOGGER.critical(f"Failed to start bot: {e}")
         return
     
-    # Verify we can access the storage channel
-    if not await verify_storage_channel(app):
-        LOGGER.critical("Cannot access storage channel. Shutting down.")
-        await app.stop()
-        exit(1)
-    
+    # Get bot info
     user_bot = await app.get_me()
     LOGGER.info(f"Bot started as @{user_bot.username}")
     
-    # Send a startup message to the logs
-    try:
-        await app.send_message(STORAGE_CHANNEL_ID, "🤖 File Storage Bot is now online!")
-    except Exception as e:
-        LOGGER.warning(f"Could not send startup message: {e}")
+    # Verify we can access the storage channel
+    channel_access = await verify_storage_channel(app)
+    if not channel_access:
+        LOGGER.error("Cannot access storage channel. Please check:")
+        LOGGER.error("1. Is the channel ID correct?")
+        LOGGER.error("2. Is the bot added as admin to the channel?")
+        LOGGER.error("3. Does the bot have permission to send messages?")
+        LOGGER.error(f"Current channel ID: {STORAGE_CHANNEL_ID}")
+        
+        # Don't shut down immediately, let the user fix the issue
+        LOGGER.error("Bot will continue running but file uploads will fail until channel access is fixed.")
     
     # Keep the bot running
     try:
+        LOGGER.info("Bot is now running. Press Ctrl+C to stop.")
         await asyncio.Event().wait()
     except KeyboardInterrupt:
         LOGGER.info("Bot stopped manually.")
