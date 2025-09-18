@@ -1,32 +1,23 @@
 # -*- coding: utf-8 -*-
-
 """
-Configuration file for the Telegram Force Subscribe Bot.
-Fill in your details here.
+Configuration file for the Telegram Subscription Bot
 """
 
-# --- Telegram Bot API ---
-# Get this token from @BotFather on Telegram.
-BOT_TOKEN = "YOUR_BOT_TOKEN"
+# Bot token from @BotFather
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
 
-# --- Telegram Client API (for handling large files > 20MB) ---
-# Optional: Get these from my.telegram.org.
-API_ID = "YOUR_API_ID"
-API_HASH = "YOUR_API_HASH"
+# API credentials (for handling large files >20MB)
+# Get these from https://my.telegram.org/apps
+API_ID = 123456  # Your API ID
+API_HASH = "your_api_hash_here"
 
-# --- Bot Settings ---
-# The channel and group the user must join.
-# For public channels/groups, use the @username (e.g., "@my_channel").
-# For private channels/groups, use the numerical chat ID (e.g., -1001234567890).
-# The bot MUST be an admin in both with permission to invite users.
-REQUIRED_CHANNEL_ID = "@your_channel_username"
-REQUIRED_GROUP_ID = "@your_group_username"
+# Channel and Group IDs that users must join
+# These can be usernames (with @) or numeric IDs (with - prefix for private channels/groups)
+REQUIRED_CHANNEL_ID = "@your_channel_username"  # or "-1001234567890"
+REQUIRED_GROUP_ID = "@your_group_username"      # or "-1001234567891"
 
-# The private channel where the bot will send logs about new users.
-# The bot MUST be an admin here with permission to post messages.
-LOG_CHANNEL_ID = -1001234567890 # Must be a numerical ID
+# Log channel ID (optional, for logging new users)
+LOG_CHANNEL_ID = None  # or "@your_log_channel" or "-1001234567892"
 
-# --- Customization ---
-# URL of the picture to send with the /start command.
-# This should be a direct link to an image.
-START_IMAGE_URL = "https://placehold.co/1280x720/6366f1/white?text=Welcome!"
+# Start message image URL (optional)
+START_IMAGE_URL = "https://example.com/path/to/your/image.jpg"
