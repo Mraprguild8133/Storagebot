@@ -2,24 +2,31 @@ import os
 import time
 import asyncio
 import logging
-from datetime import datetime
-from threading import Lock
-import aiohttp
-import aiofiles
 import random
 import functools
+from datetime import datetime
+from threading import Lock
+from typing import Optional
 
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import FloodWait, SessionPasswordNeeded
+from pyrogram.errors import FloodWait, SessionPasswordNeeded, BadRequest
 
 import boto3
-from botocore.exceptions import NoCredentialsError
+from botocore.exceptions import NoCredentialsError, ClientError
 from botocore.client import Config
 
 # --- Basic Configuration ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
+
+# Reduce logging noise from asyncio and aiohttp
+logging.getLogger('asyncio').setLevel(logging.WARNING)
+logging.getLogger('aiohttp').setLevel(logging.WARNING)
+logging.getLogger('botocore').setLevel(logging.WARNING)
 
 # --- Environment Variables ---
 API_ID = os.environ.get("API_ID")
@@ -29,26 +36,31 @@ WASABI_ACCESS_KEY = os.environ.get("WASABI_ACCESS_KEY")
 WASABI_SECRET_KEY = os.environ.get("WASABI_SECRET_KEY")
 WASABI_BUCKET = os.environ.get("WASABI_BUCKET")
 WASABI_REGION = os.environ.get("WASABI_REGION")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))  # Add your Telegram User ID as the main admin
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
 WELCOME_IMAGE_URL = os.environ.get("WELCOME_IMAGE_URL", "https://placehold.co/1280x720/4B5563/FFFFFF?text=Welcome!")
 
 # --- In-memory "Database" for authorized users ---
 AUTHORIZED_USERS = {ADMIN_ID} if ADMIN_ID else set()
 
 # --- Wasabi S3 Client ---
+s3_client = None
 try:
     s3_client = boto3.client(
         's3',
         endpoint_url=f'https://s3.{WASABI_REGION}.wasabisys.com',
         aws_access_key_id=WASABI_ACCESS_KEY,
         aws_secret_access_key=WASABI_SECRET_KEY,
-        config=Config(signature_version='s3v4'),
+        config=Config(
+            signature_version='s3v4',
+            retries={'max_attempts': 3, 'mode': 'standard'},
+            connect_timeout=30,
+            read_timeout=60
+        ),
         region_name=WASABI_REGION
     )
     logger.info("Wasabi client initialized successfully.")
 except Exception as e:
     logger.error(f"Failed to initialize Wasabi client: {e}")
-    s3_client = None
 
 # --- Generate unique session name to avoid conflicts ---
 SESSION_NAME = f"wasabi_bot_{random.randint(1000, 9999)}"
@@ -66,14 +78,18 @@ class UploadProgress:
         self.lock = Lock()
         self.last_update_time = 0
         self.loop = loop
+        self.is_cancelled = False
         
     def update(self, bytes_amount):
+        if self.is_cancelled:
+            return
+            
         with self.lock:
             self.uploaded += bytes_amount
             current_time = time.time()
             
             # Throttle updates to avoid FloodWait errors
-            if current_time - self.last_update_time < 1:  # Update at most once per second
+            if current_time - self.last_update_time < 2:  # Update at most once every 2 seconds
                 return
                 
             self.last_update_time = current_time
@@ -81,11 +97,14 @@ class UploadProgress:
             # Calculate progress metrics
             elapsed_time = current_time - self.start_time
             speed = self.uploaded / elapsed_time if elapsed_time > 0 else 0
-            percentage = (self.uploaded / self.total_size) * 100
+            percentage = (self.uploaded / self.total_size) * 100 if self.total_size > 0 else 0
+            
+            # Create progress bar
+            progress_bar = '█' * int(percentage / 5) + ' ' * (20 - int(percentage / 5))
             
             progress_str = (
                 f"**Uploading to Wasabi...**\n"
-                f"[{'█' * int(percentage / 5)}{' ' * (20 - int(percentage / 5))}] {percentage:.1f}%\n"
+                f"[{progress_bar}] {percentage:.1f}%\n"
                 f"**Done:** {get_readable_file_size(self.uploaded)}\n"
                 f"**Total:** {get_readable_file_size(self.total_size)}\n"
                 f"**Speed:** {get_readable_file_size(speed)}/s\n"
@@ -93,18 +112,29 @@ class UploadProgress:
             )
             
             # Schedule the message update in the asyncio event loop
-            asyncio.run_coroutine_threadsafe(
-                self.update_message(progress_str),
-                self.loop
-            )
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self.safe_update_message(progress_str),
+                    self.loop
+                )
+            except Exception as e:
+                logger.warning(f"Failed to schedule progress update: {e}")
     
-    async def update_message(self, progress_str):
+    async def safe_update_message(self, progress_str):
+        """Safely update the message with error handling"""
         try:
             await self.status_msg.edit_text(progress_str)
         except FloodWait as e:
             await asyncio.sleep(e.x)
+        except BadRequest as e:
+            if "message not found" in str(e).lower():
+                self.is_cancelled = True
+                logger.warning("Message was deleted, cancelling upload progress updates")
         except Exception as e:
-            logger.error(f"Error updating progress: {e}")
+            logger.warning(f"Error updating progress: {e}")
+    
+    def cancel(self):
+        self.is_cancelled = True
 
 # --- Decorators ---
 def admin_only(func):
@@ -128,33 +158,36 @@ def authorized_only(func):
 # --- Helper Functions ---
 def get_readable_file_size(size_in_bytes: int) -> str:
     """Converts a size in bytes to a human-readable format."""
-    if size_in_bytes is None:
+    if size_in_bytes is None or size_in_bytes <= 0:
         return "0B"
     power = 1024
     n = 0
     power_labels = {0: '', 1: 'K', 2: 'M', 3: 'G', 4: 'T'}
-    while size_in_bytes > power:
+    while size_in_bytes >= power and n < len(power_labels) - 1:
         size_in_bytes /= power
         n += 1
     return f"{size_in_bytes:.2f} {power_labels[n]}B"
 
-def get_readable_time(seconds: int) -> str:
+def get_readable_time(seconds: float) -> str:
     """Converts seconds to a human-readable format."""
+    if seconds <= 0:
+        return "0s"
+    
     result = ""
     if seconds >= 86400:
-        days = seconds // 86400
+        days = int(seconds // 86400)
         result += f"{days}d "
         seconds %= 86400
     if seconds >= 3600:
-        hours = seconds // 3600
+        hours = int(seconds // 3600)
         result += f"{hours}h "
         seconds %= 3600
     if seconds >= 60:
-        minutes = seconds // 60
+        minutes = int(seconds // 60)
         result += f"{minutes}m "
         seconds %= 60
-    result += f"{seconds}s"
-    return result
+    result += f"{int(seconds)}s"
+    return result.strip()
 
 # --- Fast Download Function ---
 async def download_file_with_progress(client, message, file_name, file_size, status_msg):
@@ -173,17 +206,19 @@ async def download_file_with_progress(client, message, file_name, file_size, sta
         current_time = time.time()
         
         # Throttle updates to avoid FloodWait errors
-        if current_time - last_update_time < 1:  # Update at most once per second
+        if current_time - last_update_time < 2:  # Update at most once every 2 seconds
             return
             
         last_update_time = current_time
         elapsed_time = current_time - start_time
         speed = current / elapsed_time if elapsed_time > 0 else 0
-        percentage = (current / total) * 100
+        percentage = (current / total) * 100 if total > 0 else 0
+        
+        progress_bar = '█' * int(percentage / 5) + ' ' * (20 - int(percentage / 5))
         
         progress_str = (
             f"**Downloading from Telegram...**\n"
-            f"[{'█' * int(percentage / 5)}{' ' * (20 - int(percentage / 5))}] {percentage:.1f}%\n"
+            f"[{progress_bar}] {percentage:.1f}%\n"
             f"**Done:** {get_readable_file_size(current)}\n"
             f"**Total:** {get_readable_file_size(total)}\n"
             f"**Speed:** {get_readable_file_size(speed)}/s\n"
@@ -195,7 +230,7 @@ async def download_file_with_progress(client, message, file_name, file_size, sta
         except FloodWait as e:
             await asyncio.sleep(e.x)
         except Exception as e:
-            logger.error(f"Error updating progress: {e}")
+            logger.warning(f"Error updating download progress: {e}")
     
     try:
         # Use pyrogram's download method which is optimized
@@ -215,8 +250,53 @@ async def download_file_with_progress(client, message, file_name, file_size, sta
         
     except Exception as e:
         logger.error(f"Error downloading file: {e}")
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        if 'file_path' in locals() and file_path and os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except:
+                pass
+        raise e
+
+async def upload_to_wasabi(file_path, file_name, status_msg, progress_tracker):
+    """Upload file to Wasabi with proper error handling"""
+    try:
+        with open(file_path, 'rb') as file_data:
+            s3_client.upload_fileobj(
+                file_data,
+                WASABI_BUCKET,
+                file_name,
+                Callback=progress_tracker.update,
+                ExtraArgs={
+                    'ACL': 'public-read',  # Make the file publicly accessible
+                    'ContentType': 'application/octet-stream'
+                }
+            )
+        return True
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        if error_code in ['RequestTimeout', 'SlowDown', 'OperationAborted']:
+            logger.warning(f"Wasabi upload timeout/slowdown: {e}")
+            # Try one more time with slower pace
+            try:
+                with open(file_path, 'rb') as file_data:
+                    s3_client.upload_fileobj(
+                        file_data,
+                        WASABI_BUCKET,
+                        file_name,
+                        ExtraArgs={
+                            'ACL': 'public-read',
+                            'ContentType': 'application/octet-stream'
+                        }
+                    )
+                return True
+            except Exception as retry_error:
+                logger.error(f"Retry upload also failed: {retry_error}")
+                raise retry_error
+        else:
+            logger.error(f"Wasabi upload error: {e}")
+            raise e
+    except Exception as e:
+        logger.error(f"Unexpected upload error: {e}")
         raise e
 
 # --- Bot Commands ---
@@ -313,16 +393,14 @@ async def file_handler(client: Client, message: Message):
         await status_msg.edit_text("Download complete. Starting upload to Wasabi...")
         
         # Upload to Wasabi with progress
-        upload_progress = UploadProgress(status_msg, file_size, asyncio.get_event_loop())
+        progress_tracker = UploadProgress(status_msg, file_size, asyncio.get_event_loop())
         
-        # Use upload_fileobj instead of upload_file for progress tracking
-        with open(file_path, 'rb') as file_data:
-            s3_client.upload_fileobj(
-                file_data,
-                WASABI_BUCKET,
-                file_name,
-                Callback=upload_progress.update
-            )
+        # Upload with retry mechanism
+        success = await upload_to_wasabi(file_path, file_name, status_msg, progress_tracker)
+        
+        if not success:
+            await status_msg.edit_text("Upload failed after retry. Please try again later.")
+            return
         
         # Generate Presigned URL
         presigned_url = s3_client.generate_presigned_url(
@@ -352,11 +430,21 @@ async def file_handler(client: Client, message: Message):
         
     except Exception as e:
         logger.error(f"Error processing file: {e}")
-        await status_msg.edit_text(f"Failed to process file: {str(e)}")
+        error_msg = f"Failed to process file: {str(e)}"
+        if "Timeout" in str(e) or "socket" in str(e).lower():
+            error_msg = "Network timeout during upload. Please try again with a smaller file or better connection."
+        
+        try:
+            await status_msg.edit_text(error_msg)
+        except:
+            await message.reply_text(error_msg)
     finally:
         # Clean up downloaded file
         if 'file_path' in locals() and file_path and os.path.exists(file_path):
-            os.remove(file_path)
+            try:
+                os.remove(file_path)
+            except:
+                pass
 
 async def main():
     if not all([API_ID, API_HASH, BOT_TOKEN, WASABI_ACCESS_KEY, WASABI_SECRET_KEY, WASABI_BUCKET, WASABI_REGION, ADMIN_ID]):
@@ -384,7 +472,11 @@ async def main():
         me = await app.get_me()
         logger.info(f"Bot is running as @{me.username}")
         
-        await asyncio.Event().wait()  # Keep the bot running
+        # Set up proper error handling for the event loop
+        loop = asyncio.get_event_loop()
+        
+        # Keep the bot running
+        await asyncio.Event().wait()
         
     except SessionPasswordNeeded:
         logger.error("Two-factor authentication is enabled. This bot cannot handle 2FA.")
@@ -396,12 +488,13 @@ async def main():
             logger.info("Bot stopped successfully.")
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
+    # Set up proper event loop policy for Windows compatibility
+    if os.name == 'nt':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    
     try:
-        loop.run_until_complete(main())
+        asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Bot shutting down...")
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
-    finally:
-        loop.close()
