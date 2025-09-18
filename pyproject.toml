@@ -19,4 +19,4 @@ dependencies = [
     "python-telegram-bot>=13.7",
     "requests>=2.32.5",
     "pyTelegramBotAPI>=4.29.1",
-]
+   ]
