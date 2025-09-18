@@ -197,31 +197,44 @@ async def list_users_command(client, message: Message):
 async def speed_test_command(client, message: Message):
     """Performs a network speed test."""
     status_msg = await message.reply_text("💨 **Running speed test...**\n\nPerforming download test...")
-    test_file_url = "http://ipv4.download.thinkbroadband.com/10MB.zip"  # More reliable test file
-    file_path = "speedtest_10mb.zip"
     
-    # Download Test
-    start_time = time.time()
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(test_file_url) as response:
-                response.raise_for_status()
-                async with aiofiles.open(file_path, "wb") as f:
-                    while True:
-                        chunk = await response.content.read(8192)
-                        if not chunk:
-                            break
-                        await f.write(chunk)
-    except Exception as e:
-        await status_msg.edit_text(f"❌ **Error during download test:** {e}")
-        if os.path.exists(file_path):
-            os.remove(file_path)
+    # Use multiple test file options
+    test_file_urls = [
+        "https://speed.hetzner.de/10MB.bin",
+        "http://ipv4.download.thinkbroadband.com/10MB.zip",
+        "https://proof.ovh.net/files/10Mb.dat"
+    ]
+    
+    file_path = "speedtest_10mb.tmp"
+    download_success = False
+    
+    # Try each URL until one works
+    for test_file_url in test_file_urls:
+        try:
+            # Download Test
+            start_time = time.time()
+            async with aiohttp.ClientSession() as session:
+                async with session.get(test_file_url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                    response.raise_for_status()
+                    async with aiofiles.open(file_path, "wb") as f:
+                        async for chunk in response.content.iter_chunked(8192):
+                            await f.write(chunk)
+            
+            end_time = time.time()
+            download_duration = end_time - start_time
+            file_size_bytes = os.path.getsize(file_path)
+            download_speed = file_size_bytes / download_duration
+            
+            download_success = True
+            break
+            
+        except Exception as e:
+            print(f"Speed test failed with {test_file_url}: {e}")
+            continue
+    
+    if not download_success:
+        await status_msg.edit_text("❌ **All speed test servers are unavailable.**")
         return
-        
-    end_time = time.time()
-    download_duration = end_time - start_time
-    file_size_bytes = os.path.getsize(file_path)
-    download_speed = file_size_bytes / download_duration
     
     await status_msg.edit_text(
         f"💨 **Running speed test...**\n\n"
@@ -233,7 +246,7 @@ async def speed_test_command(client, message: Message):
     start_time = time.time()
     try:
         # Use a different key for the upload test to avoid conflicts
-        test_key = f"speedtest_{int(time.time())}.zip"
+        test_key = f"speedtest_{int(time.time())}.tmp"
         s3_client.upload_file(file_path, WASABI_BUCKET, test_key)
     except Exception as e:
         await status_msg.edit_text(f"❌ **Error during upload test:** {e}")
