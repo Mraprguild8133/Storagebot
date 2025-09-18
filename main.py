@@ -17,7 +17,6 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 
 # --- Configuration Loading ---
-# Load environment variables from a .env file for local development
 load_dotenv()
 
 API_ID = os.environ.get("API_ID")
@@ -41,7 +40,6 @@ except ValueError:
     raise ValueError("API_ID and ADMIN_ID must be integers.")
 
 # --- In-memory User Management ---
-# For a production bot, consider a persistent database (e.g., SQLite, Redis).
 AUTHORIZED_USERS = {ADMIN_ID}
 
 # --- Boto3 S3 Client Initialization for Wasabi ---
@@ -59,7 +57,6 @@ try:
     print("✅ Successfully connected to Wasabi S3 bucket")
 except Exception as e:
     print(f"❌ Error initializing Boto3 client: {e}")
-    # Exit if we can't connect to Wasabi
     exit(1)
 
 # Create downloads directory if it doesn't exist
@@ -109,47 +106,6 @@ def authorized_user(func):
             return
         return await func(client, message, *args, **kwargs)
     return wrapped
-
-# --- Progress Callback Classes ---
-class Boto3Progress:
-    """
-    Callback handler for Boto3 uploads to update the Telegram message.
-    Handles the complexity of calling an async function from a sync callback.
-    """
-    def __init__(self, message, file_size):
-        self._message = message
-        self._size = float(file_size)
-        self._seen_so_far = 0
-        self._start_time = time.time()
-        self._last_update_time = 0
-
-    def __call__(self, bytes_amount):
-        self._seen_so_far += bytes_amount
-        now = time.time()
-        
-        # Update Telegram message throttled to once every 2 seconds
-        if now - self._last_update_time > 2.0 or self._seen_so_far >= self._size:
-            percentage = (self._seen_so_far / self._size) * 100
-            elapsed_time = now - self._start_time
-            speed = self._seen_so_far / elapsed_time if elapsed_time > 0 else 0
-            
-            progress_str = f"[{'█' * int(percentage / 5)}{'░' * (20 - int(percentage / 5))}]"
-
-            text = (
-                f"**🚀 Uploading to Wasabi...**\n\n"
-                f"`{progress_str}` **{percentage:.2f}%**\n\n"
-                f"✅ **Uploaded:** {humanbytes(self._seen_so_far)} / {humanbytes(self._size)}\n"
-                f"⚡️ **Speed:** {humanbytes(speed)}/s\n"
-                f"⏳ **Elapsed:** {time_formatter(elapsed_time)}"
-            )
-            
-            # Schedule the async message edit on the main event loop
-            try:
-                asyncio.create_task(self._message.edit_text(text))
-            except Exception as e:
-                print(f"Error updating progress: {e}")
-                
-            self._last_update_time = now
 
 # --- Telegram Command Handlers ---
 @app.on_message(filters.command("start") & filters.private)
@@ -241,8 +197,8 @@ async def list_users_command(client, message: Message):
 async def speed_test_command(client, message: Message):
     """Performs a network speed test."""
     status_msg = await message.reply_text("💨 **Running speed test...**\n\nPerforming download test...")
-    test_file_url = "http://speed.hetzner.de/10MB.bin"
-    file_path = "speedtest_10mb.bin"
+    test_file_url = "http://ipv4.download.thinkbroadband.com/10MB.zip"  # More reliable test file
+    file_path = "speedtest_10mb.zip"
     
     # Download Test
     start_time = time.time()
@@ -252,7 +208,7 @@ async def speed_test_command(client, message: Message):
                 response.raise_for_status()
                 async with aiofiles.open(file_path, "wb") as f:
                     while True:
-                        chunk = await response.content.read(1024)
+                        chunk = await response.content.read(8192)
                         if not chunk:
                             break
                         await f.write(chunk)
@@ -277,7 +233,7 @@ async def speed_test_command(client, message: Message):
     start_time = time.time()
     try:
         # Use a different key for the upload test to avoid conflicts
-        test_key = f"speedtest_{int(time.time())}.bin"
+        test_key = f"speedtest_{int(time.time())}.zip"
         s3_client.upload_file(file_path, WASABI_BUCKET, test_key)
     except Exception as e:
         await status_msg.edit_text(f"❌ **Error during upload test:** {e}")
@@ -326,11 +282,13 @@ async def file_handler(client: Client, message: Message):
     status_msg = await message.reply_text(f"📥 **Starting download:** `{file_name}`")
     
     start_time = time.time()
-    last_update_time_tg = [0]  # Use a list to make it mutable in the closure
+    last_update_time = start_time
 
-    async def download_progress_callback(current, total):
+    # Download progress callback
+    async def progress(current, total):
+        nonlocal last_update_time
         now = time.time()
-        if now - last_update_time_tg[0] > 2.0:
+        if now - last_update_time > 2.0:
             percentage = (current / total) * 100
             elapsed_time = now - start_time
             speed = current / elapsed_time if elapsed_time > 0 else 0
@@ -345,7 +303,7 @@ async def file_handler(client: Client, message: Message):
             )
             try:
                 await status_msg.edit_text(text)
-                last_update_time_tg[0] = now
+                last_update_time = now
             except Exception as e:
                 print(f"Error updating download progress: {e}")
 
@@ -353,7 +311,7 @@ async def file_handler(client: Client, message: Message):
         await client.download_media(
             message=message,
             file_name=download_path,
-            progress=download_progress_callback
+            progress=progress
         )
     except Exception as e:
         await status_msg.edit_text(f"❌ **Error during download:** {e}")
@@ -363,29 +321,50 @@ async def file_handler(client: Client, message: Message):
 
     await status_msg.edit_text("✅ **Download complete!**\n\nStarting upload to Wasabi...")
 
-    # Upload to Wasabi
+    # Upload to Wasabi with simplified progress
+    upload_start_time = time.time()
+    last_upload_update = upload_start_time
+    uploaded_bytes = 0
+    
+    def upload_progress_callback(bytes_amount):
+        nonlocal uploaded_bytes, last_upload_update
+        uploaded_bytes += bytes_amount
+        now = time.time()
+        if now - last_upload_update > 2.0:
+            percentage = (uploaded_bytes / file_size) * 100
+            elapsed_time = now - upload_start_time
+            speed = uploaded_bytes / elapsed_time if elapsed_time > 0 else 0
+            
+            progress_str = f"[{'█' * int(percentage / 5)}{'░' * (20 - int(percentage / 5))}]"
+            
+            text = (
+                f"**🚀 Uploading to Wasabi...**\n\n"
+                f"`{progress_str}` **{percentage:.2f}%**\n\n"
+                f"✅ **Uploaded:** {humanbytes(uploaded_bytes)} / {humanbytes(file_size)}\n"
+                f"⚡️ **Speed:** {humanbytes(speed)}/s\n"
+                f"⏳ **Elapsed:** {time_formatter(elapsed_time)}"
+            )
+            
+            # Update status message (this will run in a thread, so we use run_coroutine_threadsafe)
+            asyncio.run_coroutine_threadsafe(status_msg.edit_text(text), asyncio.get_event_loop())
+            last_upload_update = now
+
     try:
-        boto_progress = Boto3Progress(status_msg, file_size)
-        # Boto3 is synchronous, run it in a thread to avoid blocking the event loop
-        await asyncio.to_thread(
-            s3_client.upload_file,
+        # Upload file to Wasabi
+        s3_client.upload_file(
             download_path,
             WASABI_BUCKET,
             file_name,
-            Callback=boto_progress
+            Callback=upload_progress_callback
         )
-    except NoCredentialsError:
-        await status_msg.edit_text("❌ **Configuration Error:** Wasabi credentials not found.")
-        return
-    except ClientError as e:
-        await status_msg.edit_text(f"❌ **Wasabi Error:** {e.response['Error']['Message']}")
-        return
     except Exception as e:
-        await status_msg.edit_text(f"❌ **An unexpected error occurred during upload:** {e}")
+        await status_msg.edit_text(f"❌ **Error during upload:** {e}")
+        if os.path.exists(download_path):
+            os.remove(download_path)
         return
     finally:
         if os.path.exists(download_path):
-            os.remove(download_path)  # Clean up downloaded file
+            os.remove(download_path)
 
     # Generate presigned URL
     try:
@@ -420,16 +399,18 @@ async def main():
     print(f"Bot username: @{me.username}")
     print(f"Bot ID: {me.id}")
     
+    # Send a message to admin that bot is running
     try:
-        # Keep the bot running indefinitely
-        await asyncio.Future()
-    except KeyboardInterrupt:
-        print("Bot is shutting down...")
-    finally:
-        await app.stop()
+        await app.send_message(ADMIN_ID, "🤖 Bot started successfully!")
+    except Exception:
+        pass
+    
+    # Keep the bot running
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
+    # Run the bot
     try:
-        asyncio.run(main())
+        app.run(main())
     except Exception as e:
         print(f"An error occurred during bot execution: {e}")
