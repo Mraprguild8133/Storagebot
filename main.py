@@ -3,9 +3,12 @@ import time
 import asyncio
 import logging
 from datetime import datetime
+from threading import Lock
+import aiohttp
+import aiofiles
 
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import FloodWait
 
 import boto3
@@ -24,11 +27,10 @@ WASABI_ACCESS_KEY = os.environ.get("WASABI_ACCESS_KEY")
 WASABI_SECRET_KEY = os.environ.get("WASABI_SECRET_KEY")
 WASABI_BUCKET = os.environ.get("WASABI_BUCKET")
 WASABI_REGION = os.environ.get("WASABI_REGION")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", 0)) # Add your Telegram User ID as the main admin
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))  # Add your Telegram User ID as the main admin
 WELCOME_IMAGE_URL = os.environ.get("WELCOME_IMAGE_URL", "https://placehold.co/1280x720/4B5563/FFFFFF?text=Welcome!")
 
 # --- In-memory "Database" for authorized users ---
-# In a real-world scenario, you would use a proper database like SQLite or PostgreSQL.
 AUTHORIZED_USERS = {ADMIN_ID} if ADMIN_ID else set()
 
 # --- Wasabi S3 Client ---
@@ -49,6 +51,55 @@ except Exception as e:
 # --- Pyrogram Client ---
 app = Client("wasabi_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
+# --- Thread-safe progress tracking ---
+class UploadProgress:
+    def __init__(self, status_msg, total_size):
+        self.status_msg = status_msg
+        self.total_size = total_size
+        self.uploaded = 0
+        self.start_time = time.time()
+        self.lock = Lock()
+        self.last_update_time = 0
+        
+    def update(self, bytes_amount):
+        with self.lock:
+            self.uploaded += bytes_amount
+            current_time = time.time()
+            
+            # Throttle updates to avoid FloodWait errors
+            if current_time - self.last_update_time < 1:  # Update at most once per second
+                return
+                
+            self.last_update_time = current_time
+            
+            # Calculate progress metrics
+            elapsed_time = current_time - self.start_time
+            speed = self.uploaded / elapsed_time if elapsed_time > 0 else 0
+            percentage = (self.uploaded / self.total_size) * 100
+            
+            progress_str = (
+                f"**Uploading to Wasabi...**\n"
+                f"[{'█' * int(percentage / 5)}{' ' * (20 - int(percentage / 5))}] {percentage:.1f}%\n"
+                f"**Done:** {get_readable_file_size(self.uploaded)}\n"
+                f"**Total:** {get_readable_file_size(self.total_size)}\n"
+                f"**Speed:** {get_readable_file_size(speed)}/s\n"
+                f"**ETA:** {get_readable_time((self.total_size - self.uploaded) / speed) if speed > 0 else '...'}"
+            )
+            
+            # Schedule the message update in the asyncio event loop
+            asyncio.run_coroutine_threadsafe(
+                self.update_message(progress_str),
+                asyncio.get_event_loop()
+            )
+    
+    async def update_message(self, progress_str):
+        try:
+            await self.status_msg.edit_text(progress_str)
+        except FloodWait as e:
+            await asyncio.sleep(e.x)
+        except Exception as e:
+            logger.error(f"Error updating progress: {e}")
+
 # --- Decorators ---
 def admin_only(func):
     """Decorator to restrict access to the admin only."""
@@ -67,7 +118,6 @@ def authorized_only(func):
             return
         await func(client, message)
     return wrapped
-
 
 # --- Helper Functions ---
 def get_readable_file_size(size_in_bytes: int) -> str:
@@ -99,6 +149,71 @@ def get_readable_time(seconds: int) -> str:
         seconds %= 60
     result += f"{seconds}s"
     return result
+
+# --- Fast Download Function ---
+async def download_file_with_progress(client, message, file_id, file_name, file_size, status_msg):
+    """Download file with progress using aiohttp for faster downloads"""
+    file_path = f"./downloads/{file_name}"
+    
+    # Create downloads directory if it doesn't exist
+    os.makedirs("./downloads", exist_ok=True)
+    
+    start_time = time.time()
+    last_update_time = start_time
+    downloaded = 0
+    
+    async def update_progress():
+        nonlocal last_update_time, downloaded
+        current_time = time.time()
+        
+        # Throttle updates to avoid FloodWait errors
+        if current_time - last_update_time < 1:  # Update at most once per second
+            return
+            
+        last_update_time = current_time
+        elapsed_time = current_time - start_time
+        speed = downloaded / elapsed_time if elapsed_time > 0 else 0
+        percentage = (downloaded / file_size) * 100
+        
+        progress_str = (
+            f"**Downloading from Telegram...**\n"
+            f"[{'█' * int(percentage / 5)}{' ' * (20 - int(percentage / 5))}] {percentage:.1f}%\n"
+            f"**Done:** {get_readable_file_size(downloaded)}\n"
+            f"**Total:** {get_readable_file_size(file_size)}\n"
+            f"**Speed:** {get_readable_file_size(speed)}/s\n"
+            f"**ETA:** {get_readable_time((file_size - downloaded) / speed) if speed > 0 else '...'}"
+        )
+        
+        try:
+            await status_msg.edit_text(progress_str)
+        except FloodWait as e:
+            await asyncio.sleep(e.x)
+        except Exception as e:
+            logger.error(f"Error updating progress: {e}")
+    
+    try:
+        # Use pyrogram's download method which is optimized
+        download_task = app.download_media(
+            message,
+            file_name=file_path,
+            progress=update_progress
+        )
+        
+        # Wait for download to complete
+        await download_task
+        
+        # Verify file size
+        downloaded_size = os.path.getsize(file_path)
+        if downloaded_size != file_size:
+            logger.warning(f"File size mismatch: expected {file_size}, got {downloaded_size}")
+        
+        return file_path
+        
+    except Exception as e:
+        logger.error(f"Error downloading file: {e}")
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise e
 
 # --- Bot Commands ---
 @app.on_message(filters.command("start") & filters.private)
@@ -159,7 +274,6 @@ async def list_users_command(client: Client, message: Message):
     user_list = "\n".join([f"- `{user_id}`" for user_id in AUTHORIZED_USERS])
     await message.reply_text(f"**Authorized Users:**\n{user_list}")
 
-
 # --- File Handling ---
 @app.on_message(
     (filters.document | filters.video | filters.audio | filters.photo) &
@@ -177,129 +291,62 @@ async def file_handler(client: Client, message: Message):
         return
 
     file_name = media.file_name if hasattr(media, 'file_name') and media.file_name else f"file_{media.file_unique_id}"
-    file_path = f"./downloads/{file_name}"
+    file_size = media.file_size
     
     start_time = time.time()
     status_msg = await message.reply_text("Starting download from Telegram...")
 
-    # --- Download Progress Callback ---
-    async def download_progress(current, total):
-        elapsed_time = time.time() - start_time
-        speed = current / elapsed_time if elapsed_time > 0 else 0
-        percentage = (current / total) * 100
-        progress_str = (
-            f"**Downloading from Telegram...**\n"
-            f"[{'█' * int(percentage / 5)}{' ' * (20 - int(percentage / 5))}] {percentage:.1f}%\n"
-            f"**Done:** {get_readable_file_size(current)}\n"
-            f"**Total:** {get_readable_file_size(total)}\n"
-            f"**Speed:** {get_readable_file_size(speed)}/s\n"
-            f"**ETA:** {get_readable_time((total - current) / speed) if speed > 0 else '...'}"
-        )
-        try:
-            await status_msg.edit_text(progress_str)
-        except FloodWait as e:
-            await asyncio.sleep(e.x)
-
-    # --- Download from Telegram ---
     try:
-        await message.download(
-            file_name=file_path,
-            progress=download_progress
+        # Download file with progress
+        file_path = await download_file_with_progress(
+            client, message, media.file_id, file_name, file_size, status_msg
         )
-    except Exception as e:
-        logger.error(f"Error downloading from Telegram: {e}")
-        await status_msg.edit_text(f"Failed to download from Telegram: {e}")
-        if os.path.exists(file_path):
-            os.remove(file_path)
-        return
-    
-    await status_msg.edit_text("Download complete. Starting upload to Wasabi...")
-    
-    # --- Upload Progress Callback ---
-    upload_start_time = time.time()
-    total_size = os.path.getsize(file_path)
-    sent = 0
-    
-    class ProgressCallback:
-        def __init__(self, size):
-            self._size = size
-            self._seen_so_far = 0
-            self._lock = asyncio.Lock()
-
-        async def __call__(self, bytes_amount):
-            async with self._lock:
-                self._seen_so_far += bytes_amount
-                elapsed_time = time.time() - upload_start_time
-                speed = self._seen_so_far / elapsed_time if elapsed_time > 0 else 0
-                percentage = (self._seen_so_far / self._size) * 100
-                
-                progress_str = (
-                    f"**Uploading to Wasabi...**\n"
-                    f"[{'█' * int(percentage / 5)}{' ' * (20 - int(percentage / 5))}] {percentage:.1f}%\n"
-                    f"**Done:** {get_readable_file_size(self._seen_so_far)}\n"
-                    f"**Total:** {get_readable_file_size(self._size)}\n"
-                    f"**Speed:** {get_readable_file_size(speed)}/s\n"
-                    f"**ETA:** {get_readable_time((self._size - self._seen_so_far) / speed) if speed > 0 else '...'}"
-                )
-                
-                try:
-                    # Update message only if it's different to avoid flood waits
-                    if status_msg.text != progress_str:
-                         await status_msg.edit_text(progress_str)
-                except FloodWait as e:
-                    await asyncio.sleep(e.x)
-
-    # --- Upload to Wasabi ---
-    try:
+        
+        await status_msg.edit_text("Download complete. Starting upload to Wasabi...")
+        
+        # Upload to Wasabi with progress
+        upload_progress = UploadProgress(status_msg, file_size)
+        
         s3_client.upload_file(
             file_path,
             WASABI_BUCKET,
             file_name,
-            Callback=await ProgressCallback(total_size)
+            Callback=upload_progress.update
         )
-    except NoCredentialsError:
-        logger.error("Wasabi credentials not available.")
-        await status_msg.edit_text("Error: Wasabi credentials not configured.")
-        return
-    except Exception as e:
-        logger.error(f"Error uploading to Wasabi: {e}")
-        await status_msg.edit_text(f"Failed to upload to Wasabi: {e}")
-        return
-    finally:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-
-    # --- Generate Presigned URL ---
-    try:
+        
+        # Generate Presigned URL
         presigned_url = s3_client.generate_presigned_url(
             'get_object',
             Params={'Bucket': WASABI_BUCKET, 'Key': file_name},
             ExpiresIn=3600 * 24 * 7  # 7 days
         )
+        
+        # Final Message
+        end_time = time.time()
+        total_time_taken = get_readable_time(int(end_time - start_time))
+        
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Download / Stream Now", url=presigned_url)]]
+        )
+
+        await status_msg.edit_text(
+            (
+                f"**Upload Successful!**\n\n"
+                f"**File Name:** `{file_name}`\n"
+                f"**File Size:** {get_readable_file_size(file_size)}\n"
+                f"**Time Taken:** {total_time_taken}\n\n"
+                "The link will be valid for 7 days."
+            ),
+            reply_markup=keyboard
+        )
+        
     except Exception as e:
-        logger.error(f"Could not generate presigned URL: {e}")
-        await status_msg.edit_text("Upload successful, but failed to generate a shareable link.")
-        return
-
-    # --- Final Message ---
-    end_time = time.time()
-    total_time_taken = get_readable_time(int(end_time - start_time))
-    
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Download / Stream Now", url=presigned_url)]]
-    )
-
-    await status_msg.edit_text(
-        (
-            f"**Upload Successful!**\n\n"
-            f"**File Name:** `{file_name}`\n"
-            f"**File Size:** {get_readable_file_size(total_size)}\n"
-            f"**Time Taken:** {total_time_taken}\n\n"
-            "The link will be valid for 7 days."
-        ),
-        reply_markup=keyboard
-    )
-
+        logger.error(f"Error processing file: {e}")
+        await status_msg.edit_text(f"Failed to process file: {e}")
+    finally:
+        # Clean up downloaded file
+        if 'file_path' in locals() and os.path.exists(file_path):
+            os.remove(file_path)
 
 async def main():
     if not all([API_ID, API_HASH, BOT_TOKEN, WASABI_ACCESS_KEY, WASABI_SECRET_KEY, WASABI_BUCKET, WASABI_REGION, ADMIN_ID]):
@@ -312,7 +359,7 @@ async def main():
         
     await app.start()
     logger.info("Bot started successfully!")
-    await asyncio.Event().wait() # Keep the bot running
+    await asyncio.Event().wait()  # Keep the bot running
 
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
@@ -321,4 +368,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         logger.info("Bot shutting down...")
     finally:
-        loop.run_until_complete(app.stop())
+        if app.is_connected:
+            loop.run_until_complete(app.stop())
