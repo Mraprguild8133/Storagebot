@@ -79,13 +79,20 @@ class UploadProgress:
         self.last_update_time = 0
         self.loop = loop
         self.is_cancelled = False
+        self.is_completed = False
         
     def update(self, bytes_amount):
-        if self.is_cancelled:
+        if self.is_cancelled or self.is_completed:
             return
             
         with self.lock:
             self.uploaded += bytes_amount
+            
+            # Check if upload is complete (within 1KB tolerance)
+            if abs(self.uploaded - self.total_size) < 1024:
+                self.is_completed = True
+                return
+                
             current_time = time.time()
             
             # Throttle updates to avoid FloodWait errors
@@ -97,10 +104,15 @@ class UploadProgress:
             # Calculate progress metrics
             elapsed_time = current_time - self.start_time
             speed = self.uploaded / elapsed_time if elapsed_time > 0 else 0
-            percentage = (self.uploaded / self.total_size) * 100 if self.total_size > 0 else 0
+            percentage = min(100, (self.uploaded / self.total_size) * 100) if self.total_size > 0 else 0
             
             # Create progress bar
             progress_bar = '█' * int(percentage / 5) + ' ' * (20 - int(percentage / 5))
+            
+            # Calculate ETA safely
+            remaining_bytes = max(0, self.total_size - self.uploaded)
+            eta_seconds = remaining_bytes / speed if speed > 0 else 0
+            eta_str = get_readable_time(eta_seconds) if speed > 0 else '...'
             
             progress_str = (
                 f"**Uploading to Wasabi...**\n"
@@ -108,7 +120,7 @@ class UploadProgress:
                 f"**Done:** {get_readable_file_size(self.uploaded)}\n"
                 f"**Total:** {get_readable_file_size(self.total_size)}\n"
                 f"**Speed:** {get_readable_file_size(speed)}/s\n"
-                f"**ETA:** {get_readable_time((self.total_size - self.uploaded) / speed) if speed > 0 else '...'}"
+                f"**ETA:** {eta_str}"
             )
             
             # Schedule the message update in the asyncio event loop
@@ -173,6 +185,9 @@ def get_readable_time(seconds: float) -> str:
     if seconds <= 0:
         return "0s"
     
+    # Round to nearest whole number to avoid decimal issues
+    seconds = round(seconds)
+    
     result = ""
     if seconds >= 86400:
         days = int(seconds // 86400)
@@ -186,7 +201,11 @@ def get_readable_time(seconds: float) -> str:
         minutes = int(seconds // 60)
         result += f"{minutes}m "
         seconds %= 60
-    result += f"{int(seconds)}s"
+    
+    # Only show seconds if less than a minute, or as part of larger time
+    if seconds > 0 or not result:
+        result += f"{int(seconds)}s"
+    
     return result.strip()
 
 # --- Fast Download Function ---
@@ -212,9 +231,14 @@ async def download_file_with_progress(client, message, file_name, file_size, sta
         last_update_time = current_time
         elapsed_time = current_time - start_time
         speed = current / elapsed_time if elapsed_time > 0 else 0
-        percentage = (current / total) * 100 if total > 0 else 0
+        percentage = min(100, (current / total) * 100) if total > 0 else 0
         
         progress_bar = '█' * int(percentage / 5) + ' ' * (20 - int(percentage / 5))
+        
+        # Calculate ETA safely
+        remaining_bytes = max(0, total - current)
+        eta_seconds = remaining_bytes / speed if speed > 0 else 0
+        eta_str = get_readable_time(eta_seconds) if speed > 0 else '...'
         
         progress_str = (
             f"**Downloading from Telegram...**\n"
@@ -222,7 +246,7 @@ async def download_file_with_progress(client, message, file_name, file_size, sta
             f"**Done:** {get_readable_file_size(current)}\n"
             f"**Total:** {get_readable_file_size(total)}\n"
             f"**Speed:** {get_readable_file_size(speed)}/s\n"
-            f"**ETA:** {get_readable_time((total - current) / speed) if speed > 0 else '...'}"
+            f"**ETA:** {eta_str}"
         )
         
         try:
@@ -243,7 +267,7 @@ async def download_file_with_progress(client, message, file_name, file_size, sta
         # Verify file size
         if file_path and os.path.exists(file_path):
             downloaded_size = os.path.getsize(file_path)
-            if downloaded_size != file_size:
+            if abs(downloaded_size - file_size) > 1024:  # Allow 1KB tolerance
                 logger.warning(f"File size mismatch: expected {file_size}, got {downloaded_size}")
         
         return file_path
@@ -259,45 +283,62 @@ async def download_file_with_progress(client, message, file_name, file_size, sta
 
 async def upload_to_wasabi(file_path, file_name, status_msg, progress_tracker):
     """Upload file to Wasabi with proper error handling"""
-    try:
-        with open(file_path, 'rb') as file_data:
-            s3_client.upload_fileobj(
-                file_data,
-                WASABI_BUCKET,
-                file_name,
-                Callback=progress_tracker.update,
-                ExtraArgs={
-                    'ACL': 'public-read',  # Make the file publicly accessible
-                    'ContentType': 'application/octet-stream'
-                }
+    max_retries = 3
+    retry_delay = 5  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            with open(file_path, 'rb') as file_data:
+                s3_client.upload_fileobj(
+                    file_data,
+                    WASABI_BUCKET,
+                    file_name,
+                    Callback=progress_tracker.update,
+                    ExtraArgs={
+                        'ACL': 'public-read',
+                        'ContentType': 'application/octet-stream'
+                    }
+                )
+            
+            # Force final update to show 100% completion
+            progress_tracker.uploaded = progress_tracker.total_size
+            final_progress = (
+                f"**Upload Complete!**\n"
+                f"[{'█' * 20}] 100.0%\n"
+                f"**Done:** {get_readable_file_size(progress_tracker.total_size)}\n"
+                f"**Total:** {get_readable_file_size(progress_tracker.total_size)}\n"
+                f"**Finalizing...**"
             )
-        return True
-    except ClientError as e:
-        error_code = e.response['Error']['Code']
-        if error_code in ['RequestTimeout', 'SlowDown', 'OperationAborted']:
-            logger.warning(f"Wasabi upload timeout/slowdown: {e}")
-            # Try one more time with slower pace
+            
             try:
-                with open(file_path, 'rb') as file_data:
-                    s3_client.upload_fileobj(
-                        file_data,
-                        WASABI_BUCKET,
-                        file_name,
-                        ExtraArgs={
-                            'ACL': 'public-read',
-                            'ContentType': 'application/octet-stream'
-                        }
-                    )
-                return True
-            except Exception as retry_error:
-                logger.error(f"Retry upload also failed: {retry_error}")
-                raise retry_error
-        else:
-            logger.error(f"Wasabi upload error: {e}")
-            raise e
-    except Exception as e:
-        logger.error(f"Unexpected upload error: {e}")
-        raise e
+                await status_msg.edit_text(final_progress)
+            except:
+                pass
+                
+            return True
+            
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            logger.error(f"Wasabi upload error (attempt {attempt + 1}/{max_retries}): {error_code} - {e}")
+            
+            if attempt < max_retries - 1:
+                await status_msg.edit_text(f"Upload failed ({error_code}). Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                raise e
+                
+        except Exception as e:
+            logger.error(f"Unexpected upload error (attempt {attempt + 1}/{max_retries}): {e}")
+            
+            if attempt < max_retries - 1:
+                await status_msg.edit_text(f"Upload failed. Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2
+            else:
+                raise e
+    
+    return False
 
 # --- Bot Commands ---
 @app.on_message(filters.command("start") & filters.private)
@@ -453,7 +494,7 @@ async def main():
 
     # Create downloads directory if it doesn't exist
     if not os.path.isdir("downloads"):
-        os.makedirs("downloads")
+        os.makedirs("./downloads", exist_ok=True)
     
     # Clean up any existing session files to avoid conflicts
     session_files = [f for f in os.listdir('.') if f.startswith('wasabi_bot') and f.endswith('.session')]
@@ -472,9 +513,6 @@ async def main():
         me = await app.get_me()
         logger.info(f"Bot is running as @{me.username}")
         
-        # Set up proper error handling for the event loop
-        loop = asyncio.get_event_loop()
-        
         # Keep the bot running
         await asyncio.Event().wait()
         
@@ -492,7 +530,7 @@ if __name__ == "__main__":
     if os.name == 'nt':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     
-    try:
+  try:
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Bot shutting down...")
