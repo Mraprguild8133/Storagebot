@@ -7,6 +7,7 @@ import time
 import math
 import asyncio
 import aiohttp
+import aiofiles
 from functools import wraps
 from dotenv import load_dotenv
 
@@ -52,16 +53,20 @@ try:
         aws_secret_access_key=WASABI_SECRET_KEY,
         region_name=WASABI_REGION
     )
+    
+    # Test the connection
+    s3_client.head_bucket(Bucket=WASABI_BUCKET)
+    print("✅ Successfully connected to Wasabi S3 bucket")
 except Exception as e:
-    print(f"Error initializing Boto3 client: {e}")
+    print(f"❌ Error initializing Boto3 client: {e}")
     # Exit if we can't connect to Wasabi
     exit(1)
 
+# Create downloads directory if it doesn't exist
+os.makedirs("./downloads", exist_ok=True)
 
 # --- Pyrogram Client Initialization ---
 app = Client("wasabi_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-# We will attach the running event loop later in main()
-app.loop = None
 
 # --- Helper Functions ---
 def humanbytes(size):
@@ -111,24 +116,24 @@ class Boto3Progress:
     Callback handler for Boto3 uploads to update the Telegram message.
     Handles the complexity of calling an async function from a sync callback.
     """
-    def __init__(self, message, file_size, loop):
+    def __init__(self, message, file_size):
         self._message = message
         self._size = float(file_size)
         self._seen_so_far = 0
-        self._loop = loop
         self._start_time = time.time()
         self._last_update_time = 0
 
     def __call__(self, bytes_amount):
+        self._seen_so_far += bytes_amount
         now = time.time()
+        
         # Update Telegram message throttled to once every 2 seconds
-        if now - self._last_update_time > 2.0 or self._seen_so_far == self._size:
-            self._seen_so_far += bytes_amount
+        if now - self._last_update_time > 2.0 or self._seen_so_far >= self._size:
             percentage = (self._seen_so_far / self._size) * 100
             elapsed_time = now - self._start_time
             speed = self._seen_so_far / elapsed_time if elapsed_time > 0 else 0
             
-            progress_str = f"[{'█' * int(percentage / 5)}{' ' * (20 - int(percentage / 5))}]"
+            progress_str = f"[{'█' * int(percentage / 5)}{'░' * (20 - int(percentage / 5))}]"
 
             text = (
                 f"**🚀 Uploading to Wasabi...**\n\n"
@@ -137,9 +142,13 @@ class Boto3Progress:
                 f"⚡️ **Speed:** {humanbytes(speed)}/s\n"
                 f"⏳ **Elapsed:** {time_formatter(elapsed_time)}"
             )
+            
             # Schedule the async message edit on the main event loop
-            if self._loop:
-                asyncio.run_coroutine_threadsafe(self._message.edit_text(text), self._loop)
+            try:
+                asyncio.create_task(self._message.edit_text(text))
+            except Exception as e:
+                print(f"Error updating progress: {e}")
+                
             self._last_update_time = now
 
 # --- Telegram Command Handlers ---
@@ -147,7 +156,7 @@ class Boto3Progress:
 async def start_command(client, message: Message):
     """Handles the /start command."""
     if message.from_user.id not in AUTHORIZED_USERS:
-         await message.reply_photo(
+        await message.reply_photo(
             photo=WELCOME_IMAGE_URL,
             caption="""
 **Welcome to the File Upload Bot!** 🤖
@@ -155,7 +164,7 @@ async def start_command(client, message: Message):
 This bot is private. To use this bot, you need authorization from the admin.
 """
         )
-         return
+        return
     
     await message.reply_photo(
         photo=WELCOME_IMAGE_URL,
@@ -241,12 +250,12 @@ async def speed_test_command(client, message: Message):
         async with aiohttp.ClientSession() as session:
             async with session.get(test_file_url) as response:
                 response.raise_for_status()
-                with open(file_path, "wb") as f:
+                async with aiofiles.open(file_path, "wb") as f:
                     while True:
                         chunk = await response.content.read(1024)
                         if not chunk:
                             break
-                        f.write(chunk)
+                        await f.write(chunk)
     except Exception as e:
         await status_msg.edit_text(f"❌ **Error during download test:** {e}")
         if os.path.exists(file_path):
@@ -267,12 +276,15 @@ async def speed_test_command(client, message: Message):
     # Upload Test
     start_time = time.time()
     try:
-        s3_client.upload_file(file_path, WASABI_BUCKET, os.path.basename(file_path))
+        # Use a different key for the upload test to avoid conflicts
+        test_key = f"speedtest_{int(time.time())}.bin"
+        s3_client.upload_file(file_path, WASABI_BUCKET, test_key)
     except Exception as e:
         await status_msg.edit_text(f"❌ **Error during upload test:** {e}")
         if os.path.exists(file_path):
             os.remove(file_path)
         return
+        
     end_time = time.time()
     upload_duration = end_time - start_time
     upload_speed = file_size_bytes / upload_duration
@@ -287,10 +299,9 @@ async def speed_test_command(client, message: Message):
     if os.path.exists(file_path):
         os.remove(file_path)
     try:
-        s3_client.delete_object(Bucket=WASABI_BUCKET, Key=os.path.basename(file_path))
+        s3_client.delete_object(Bucket=WASABI_BUCKET, Key=test_key)
     except Exception:
-        pass # Ignore cleanup error
-
+        pass  # Ignore cleanup error
 
 # --- Main File Handling Logic ---
 @app.on_message((filters.document | filters.video | filters.audio) & filters.private)
@@ -302,7 +313,7 @@ async def file_handler(client: Client, message: Message):
         await message.reply_text("Unsupported file type.")
         return
     
-    file_name = media.file_name
+    file_name = media.file_name or f"file_{message.id}"
     file_size = media.file_size
     
     if file_size > 4 * 1024 * 1024 * 1024:
@@ -315,7 +326,7 @@ async def file_handler(client: Client, message: Message):
     status_msg = await message.reply_text(f"📥 **Starting download:** `{file_name}`")
     
     start_time = time.time()
-    last_update_time_tg = [0] # Use a list to make it mutable in the closure
+    last_update_time_tg = [0]  # Use a list to make it mutable in the closure
 
     async def download_progress_callback(current, total):
         now = time.time()
@@ -323,7 +334,7 @@ async def file_handler(client: Client, message: Message):
             percentage = (current / total) * 100
             elapsed_time = now - start_time
             speed = current / elapsed_time if elapsed_time > 0 else 0
-            progress_str = f"[{'█' * int(percentage / 5)}{' ' * (20 - int(percentage / 5))}]"
+            progress_str = f"[{'█' * int(percentage / 5)}{'░' * (20 - int(percentage / 5))}]"
             
             text = (
                 f"**📥 Downloading from Telegram...**\n\n"
@@ -335,8 +346,8 @@ async def file_handler(client: Client, message: Message):
             try:
                 await status_msg.edit_text(text)
                 last_update_time_tg[0] = now
-            except:
-                pass # Ignore errors if message not modified
+            except Exception as e:
+                print(f"Error updating download progress: {e}")
 
     try:
         await client.download_media(
@@ -354,7 +365,7 @@ async def file_handler(client: Client, message: Message):
 
     # Upload to Wasabi
     try:
-        boto_progress = Boto3Progress(status_msg, file_size, app.loop)
+        boto_progress = Boto3Progress(status_msg, file_size)
         # Boto3 is synchronous, run it in a thread to avoid blocking the event loop
         await asyncio.to_thread(
             s3_client.upload_file,
@@ -374,7 +385,7 @@ async def file_handler(client: Client, message: Message):
         return
     finally:
         if os.path.exists(download_path):
-            os.remove(download_path) # Clean up downloaded file
+            os.remove(download_path)  # Clean up downloaded file
 
     # Generate presigned URL
     try:
@@ -400,11 +411,14 @@ async def file_handler(client: Client, message: Message):
 # --- Main Bot Execution ---
 async def main():
     """Starts the bot and keeps it running."""
-    global app
+    print("Starting Telegram Wasabi Bot...")
     await app.start()
     print("Bot has started successfully!")
-    # Attach the running event loop to the app instance for the Boto3 callback
-    app.loop = asyncio.get_running_loop()
+    
+    # Get bot info
+    me = await app.get_me()
+    print(f"Bot username: @{me.username}")
+    print(f"Bot ID: {me.id}")
     
     try:
         # Keep the bot running indefinitely
