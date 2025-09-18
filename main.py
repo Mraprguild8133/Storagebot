@@ -1,524 +1,280 @@
-import os
-import time
-import asyncio
+# -*- coding: utf-8 -*-
+
+"""
+An advanced Telegram bot that forces users to subscribe to a channel and group
+before they can use its features.
+
+Features:
+- Force subscription to a specified channel and group.
+- Welcome message with a start picture and user's name.
+- Inline keyboard for easy joining and verification.
+- Stores new user data in a private log channel.
+- Differentiates file handling for small and large files (conceptual).
+- High-performance asynchronous design using python-telegram-bot v20+.
+"""
+
 import logging
-import random
-from threading import Lock
+import asyncio
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
+)
+from telegram.error import TelegramError
 
-from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import FloodWait, SessionPasswordNeeded, BadRequest
+# --- Configuration ---
+# Replace these with your actual credentials and IDs.
 
-import boto3
-from botocore.exceptions import ClientError
-from botocore.client import Config
+# Get this from @BotFather on Telegram.
+BOT_TOKEN = "YOUR_BOT_TOKEN" 
 
-# --- Basic Configuration ---
+# These are for handling large files (optional, requires a user account).
+# Get them from my.telegram.org.
+API_ID = "YOUR_API_ID"
+API_HASH = "YOUR_API_HASH"
+
+# Your channel's and group's public username or private ID (e.g., -1001234567890).
+# The bot MUST be an admin in both the channel and the group to check membership.
+REQUIRED_CHANNEL_ID = "@your_channel_username"  # Or e.g., -1001234567890
+REQUIRED_GROUP_ID = "@your_group_username"      # Or e.g., -1009876543210
+
+# A private channel where the bot will store logs of new users.
+# The bot MUST be an admin here to send messages.
+LOG_CHANNEL_ID = -1001234567890 # Example private channel ID
+
+# URL of the picture to send with the /start command.
+START_IMAGE_URL = "https://placehold.co/1280x720/6366f1/white?text=Welcome!"
+
+# --- End of Configuration ---
+
+
+# Set up logging to see errors
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Reduce logging noise
-logging.getLogger('asyncio').setLevel(logging.WARNING)
-logging.getLogger('aiohttp').setLevel(logging.WARNING)
-logging.getLogger('botocore').setLevel(logging.WARNING)
 
-# --- Environment Variables ---
-API_ID = os.environ.get("API_ID")
-API_HASH = os.environ.get("API_HASH")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-WASABI_ACCESS_KEY = os.environ.get("WASABI_ACCESS_KEY")
-WASABI_SECRET_KEY = os.environ.get("WASABI_SECRET_KEY")
-WASABI_BUCKET = os.environ.get("WASABI_BUCKET")
-WASABI_REGION = os.environ.get("WASABI_REGION")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))
-WELCOME_IMAGE_URL = os.environ.get("WELCOME_IMAGE_URL", "https://placehold.co/1280x720/4B5563/FFFFFF?text=Welcome!")
-
-# --- In-memory "Database" for authorized users ---
-AUTHORIZED_USERS = {ADMIN_ID} if ADMIN_ID else set()
-
-# --- Wasabi S3 Client ---
-s3_client = None
-try:
-    s3_client = boto3.client(
-        's3',
-        endpoint_url=f'https://s3.{WASABI_REGION}.wasabisys.com',
-        aws_access_key_id=WASABI_ACCESS_KEY,
-        aws_secret_access_key=WASABI_SECRET_KEY,
-        config=Config(
-            signature_version='s3v4',
-            retries={'max_attempts': 3, 'mode': 'standard'},
-            connect_timeout=30,
-            read_timeout=60
-        ),
-        region_name=WASABI_REGION
-    )
-    logger.info("Wasabi client initialized successfully.")
-except Exception as e:
-    logger.error(f"Failed to initialize Wasabi client: {e}")
-
-# --- Generate unique session name ---
-SESSION_NAME = f"wasabi_bot_{random.randint(1000, 9999)}"
-
-# --- Pyrogram Client ---
-app = Client(SESSION_NAME, api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
-# --- Thread-safe progress tracking ---
-class UploadProgress:
-    def __init__(self, status_msg, total_size, loop):
-        self.status_msg = status_msg
-        self.total_size = total_size
-        self.uploaded = 0
-        self.start_time = time.time()
-        self.lock = Lock()
-        self.last_update_time = 0
-        self.loop = loop
-        self.is_cancelled = False
-        self.is_completed = False
+async def is_user_subscribed(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Checks if a user is a member of the required channel and group.
+    Returns True if the user is subscribed to both, otherwise False.
+    """
+    if not REQUIRED_CHANNEL_ID or not REQUIRED_GROUP_ID:
+        # If no channel/group is set, bypass the check.
+        return True
         
-    def update(self, bytes_amount):
-        if self.is_cancelled or self.is_completed:
-            return
-            
-        with self.lock:
-            self.uploaded += bytes_amount
-            
-            # Check if upload is complete (within 1KB tolerance)
-            if abs(self.uploaded - self.total_size) < 1024:
-                self.is_completed = True
-                return
-                
-            current_time = time.time()
-            
-            # Throttle updates to avoid FloodWait errors
-            if current_time - self.last_update_time < 2:
-                return
-                
-            self.last_update_time = current_time
-            
-            # Calculate progress metrics
-            elapsed_time = current_time - self.start_time
-            speed = self.uploaded / elapsed_time if elapsed_time > 0 else 0
-            percentage = min(100, (self.uploaded / self.total_size) * 100)
-            
-            # Create progress bar
-            progress_bar = '█' * int(percentage / 5) + ' ' * (20 - int(percentage / 5))
-            
-            # Calculate ETA safely
-            remaining_bytes = max(0, self.total_size - self.uploaded)
-            eta_seconds = remaining_bytes / speed if speed > 0 else 0
-            eta_str = self.get_readable_time(eta_seconds) if speed > 0 else '...'
-            
-            progress_str = (
-                f"**Uploading to Wasabi...**\n"
-                f"[{progress_bar}] {percentage:.1f}%\n"
-                f"**Done:** {self.get_readable_file_size(self.uploaded)}\n"
-                f"**Total:** {self.get_readable_file_size(self.total_size)}\n"
-                f"**Speed:** {self.get_readable_file_size(speed)}/s\n"
-                f"**ETA:** {eta_str}"
-            )
-            
-            # Schedule the message update
-            try:
-                asyncio.run_coroutine_threadsafe(
-                    self.safe_update_message(progress_str),
-                    self.loop
-                )
-            except Exception as e:
-                logger.warning(f"Failed to schedule progress update: {e}")
-    
-    async def safe_update_message(self, progress_str):
-        try:
-            await self.status_msg.edit_text(progress_str)
-        except FloodWait as e:
-            await asyncio.sleep(e.x)
-        except BadRequest as e:
-            if "message not found" in str(e).lower():
-                self.is_cancelled = True
-        except Exception as e:
-            logger.warning(f"Error updating progress: {e}")
-    
-    def get_readable_file_size(self, size_in_bytes):
-        if size_in_bytes <= 0:
-            return "0B"
-        power = 1024
-        n = 0
-        power_labels = {0: '', 1: 'K', 2: 'M', 3: 'G', 4: 'T'}
-        while size_in_bytes >= power and n < len(power_labels) - 1:
-            size_in_bytes /= power
-            n += 1
-        return f"{size_in_bytes:.2f} {power_labels[n]}B"
-    
-    def get_readable_time(self, seconds):
-        if seconds <= 0:
-            return "0s"
-        seconds = round(seconds)
-        result = ""
-        if seconds >= 86400:
-            days = seconds // 86400
-            result += f"{days}d "
-            seconds %= 86400
-        if seconds >= 3600:
-            hours = seconds // 3600
-            result += f"{hours}h "
-            seconds %= 3600
-        if seconds >= 60:
-            minutes = seconds // 60
-            result += f"{minutes}m "
-            seconds %= 60
-        if seconds > 0 or not result:
-            result += f"{seconds}s"
-        return result.strip()
-
-# --- Decorators ---
-def admin_only(func):
-    async def wrapped(client, message):
-        if message.from_user.id != ADMIN_ID:
-            await message.reply_text("You are not authorized to use this command.")
-            return
-        await func(client, message)
-    return wrapped
-
-def authorized_only(func):
-    async def wrapped(client, message):
-        if message.from_user.id not in AUTHORIZED_USERS:
-            await message.reply_text("You are not a premium user. Please contact the admin.")
-            return
-        await func(client, message)
-    return wrapped
-
-# --- Helper Functions ---
-def get_readable_file_size(size_in_bytes):
-    if size_in_bytes <= 0:
-        return "0B"
-    power = 1024
-    n = 0
-    power_labels = {0: '', 1: 'K', 2: 'M', 3: 'G', 4: 'T'}
-    while size_in_bytes >= power and n < len(power_labels) - 1:
-        size_in_bytes /= power
-        n += 1
-    return f"{size_in_bytes:.2f} {power_labels[n]}B"
-
-def get_readable_time(seconds):
-    if seconds <= 0:
-        return "0s"
-    seconds = round(seconds)
-    result = ""
-    if seconds >= 86400:
-        days = seconds // 86400
-        result += f"{days}d "
-        seconds %= 86400
-    if seconds >= 3600:
-        hours = seconds // 3600
-        result += f"{hours}h "
-        seconds %= 3600
-    if seconds >= 60:
-        minutes = seconds // 60
-        result += f"{minutes}m "
-        seconds %= 60
-    if seconds > 0 or not result:
-        result += f"{seconds}s"
-    return result.strip()
-
-# --- Download Function ---
-async def download_file_with_progress(client, message, file_name, file_size, status_msg):
-    file_path = f"./downloads/{file_name}"
-    os.makedirs("./downloads", exist_ok=True)
-    
-    start_time = time.time()
-    last_update_time = start_time
-    
-    async def update_progress(current, total):
-        nonlocal last_update_time
-        current_time = time.time()
-        
-        if current_time - last_update_time < 2:
-            return
-            
-        last_update_time = current_time
-        elapsed_time = current_time - start_time
-        speed = current / elapsed_time if elapsed_time > 0 else 0
-        percentage = min(100, (current / total) * 100)
-        
-        progress_bar = '█' * int(percentage / 5) + ' ' * (20 - int(percentage / 5))
-        
-        remaining_bytes = max(0, total - current)
-        eta_seconds = remaining_bytes / speed if speed > 0 else 0
-        eta_str = get_readable_time(eta_seconds) if speed > 0 else '...'
-        
-        progress_str = (
-            f"**Downloading from Telegram...**\n"
-            f"[{progress_bar}] {percentage:.1f}%\n"
-            f"**Done:** {get_readable_file_size(current)}\n"
-            f"**Total:** {get_readable_file_size(total)}\n"
-            f"**Speed:** {get_readable_file_size(speed)}/s\n"
-            f"**ETA:** {eta_str}"
-        )
-        
-        try:
-            await status_msg.edit_text(progress_str)
-        except FloodWait as e:
-            await asyncio.sleep(e.x)
-        except Exception as e:
-            logger.warning(f"Error updating download progress: {e}")
-    
     try:
-        file_path = await client.download_media(
-            message,
-            file_name=file_path,
-            progress=update_progress
+        # Check channel membership
+        channel_member = await context.bot.get_chat_member(
+            chat_id=REQUIRED_CHANNEL_ID, user_id=user_id
         )
-        
-        if file_path and os.path.exists(file_path):
-            downloaded_size = os.path.getsize(file_path)
-            if abs(downloaded_size - file_size) > 1024:
-                logger.warning(f"File size mismatch: expected {file_size}, got {downloaded_size}")
-        
-        return file_path
-        
-    except Exception as e:
-        logger.error(f"Error downloading file: {e}")
-        if 'file_path' in locals() and file_path and os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except:
-                pass
-        raise e
+        if channel_member.status not in ["member", "administrator", "creator"]:
+            logger.info(f"User {user_id} is not in the channel.")
+            return False
 
-async def upload_to_wasabi(file_path, file_name, status_msg, progress_tracker):
-    max_retries = 3
-    retry_delay = 5
-    
-    for attempt in range(max_retries):
-        try:
-            with open(file_path, 'rb') as file_data:
-                s3_client.upload_fileobj(
-                    file_data,
-                    WASABI_BUCKET,
-                    file_name,
-                    Callback=progress_tracker.update,
-                    ExtraArgs={
-                        'ACL': 'public-read',
-                        'ContentType': 'application/octet-stream'
-                    }
-                )
-            
-            # Force final update
-            progress_tracker.uploaded = progress_tracker.total_size
-            final_progress = (
-                f"**Upload Complete!**\n"
-                f"[{'█' * 20}] 100.0%\n"
-                f"**Done:** {get_readable_file_size(progress_tracker.total_size)}\n"
-                f"**Total:** {get_readable_file_size(progress_tracker.total_size)}\n"
-                f"**Finalizing...**"
-            )
-            
-            try:
-                await status_msg.edit_text(final_progress)
-            except:
-                pass
-                
-            return True
-            
-        except ClientError as e:
-            error_code = e.response['Error']['Code']
-            logger.error(f"Wasabi upload error (attempt {attempt + 1}/{max_retries}): {error_code}")
-            
-            if attempt < max_retries - 1:
-                await status_msg.edit_text(f"Upload failed ({error_code}). Retrying in {retry_delay} seconds...")
-                await asyncio.sleep(retry_delay)
-                retry_delay *= 2
-            else:
-                raise e
-                
-        except Exception as e:
-            logger.error(f"Unexpected upload error (attempt {attempt + 1}/{max_retries}): {e}")
-            
-            if attempt < max_retries - 1:
-                await status_msg.edit_text(f"Upload failed. Retrying in {retry_delay} seconds...")
-                await asyncio.sleep(retry_delay)
-                retry_delay *= 2
-            else:
-                raise e
-    
-    return False
-
-# --- Bot Commands ---
-@app.on_message(filters.command("start") & filters.private)
-async def start_command(client, message):
-    if message.from_user.id not in AUTHORIZED_USERS:
-        await message.reply_photo(
-            photo=WELCOME_IMAGE_URL,
-            caption="Hello! You are not authorized to use this bot. Please contact the admin for access."
+        # Check group membership
+        group_member = await context.bot.get_chat_member(
+            chat_id=REQUIRED_GROUP_ID, user_id=user_id
         )
+        if group_member.status not in ["member", "administrator", "creator"]:
+            logger.info(f"User {user_id} is not in the group.")
+            return False
+
+        logger.info(f"User {user_id} is subscribed to both channel and group.")
+        return True
+    except TelegramError as e:
+        logger.error(f"Error checking subscription for user {user_id}: {e}")
+        # If the bot is not an admin or the chat ID is wrong, it will fail.
+        # Assume not subscribed on error to be safe.
+        return False
+
+
+def get_join_keyboard() -> InlineKeyboardMarkup:
+    """Returns the inline keyboard with join links and a verification button."""
+    channel_url = f"https://t.me/{str(REQUIRED_CHANNEL_ID).replace('@', '')}"
+    group_url = f"https://t.me/{str(REQUIRED_GROUP_ID).replace('@', '')}"
+    
+    keyboard = [
+        [InlineKeyboardButton("➡️ Join Our Channel ⬅️", url=channel_url)],
+        [InlineKeyboardButton("➡️ Join Our Group ⬅️", url=group_url)],
+        [InlineKeyboardButton("✅ I Have Joined ✅", callback_data="check_join")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+async def log_new_user(user, context: ContextTypes.DEFAULT_TYPE):
+    """Sends a formatted message with new user details to the log channel."""
+    if not LOG_CHANNEL_ID:
         return
-
-    await message.reply_photo(
-        photo=WELCOME_IMAGE_URL,
-        caption=(
-            f"Hello {message.from_user.first_name}!\n\n"
-            "I can upload files to Wasabi storage and generate shareable links.\n\n"
-            "**Features:**\n"
-            "- Upload files up to 4GB\n"
-            "- Real-time progress monitoring\n"
-            "- Direct download links\n\n"
-            "Send me any file to get started!"
-        )
+        
+    text = (
+        f"**✨ New User Alert ✨**\n\n"
+        f"**User ID:** `{user.id}`\n"
+        f"**First Name:** {user.first_name}\n"
+        f"**Last Name:** {user.last_name or 'N/A'}\n"
+        f"**Username:** @{user.username or 'N/A'}"
     )
-
-@app.on_message(filters.command("adduser") & filters.private)
-@admin_only
-async def add_user_command(client, message):
     try:
-        user_id_to_add = int(message.text.split()[1])
-        AUTHORIZED_USERS.add(user_id_to_add)
-        await message.reply_text(f"User {user_id_to_add} added successfully.")
-    except (IndexError, ValueError):
-        await message.reply_text("Usage: /adduser USER_ID")
+        await context.bot.send_message(
+            chat_id=LOG_CHANNEL_ID, text=text, parse_mode="Markdown"
+        )
+    except TelegramError as e:
+        logger.error(f"Failed to send log message: {e}")
 
-@app.on_message(filters.command("removeuser") & filters.private)
-@admin_only
-async def remove_user_command(client, message):
-    try:
-        user_id_to_remove = int(message.text.split()[1])
-        if user_id_to_remove == ADMIN_ID:
-            await message.reply_text("Cannot remove admin.")
-            return
-        if user_id_to_remove in AUTHORIZED_USERS:
-            AUTHORIZED_USERS.remove(user_id_to_remove)
-            await message.reply_text(f"User {user_id_to_remove} removed.")
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles the /start command."""
+    user = update.effective_user
+    logger.info(f"User {user.id} ({user.username}) started the bot.")
+    
+    # Log the user info, but only if they are new.
+    if not context.user_data.get("is_old_user"):
+        await log_new_user(user, context)
+        context.user_data["is_old_user"] = True
+
+    if await is_user_subscribed(user.id, context):
+        welcome_text = f"🎉 Welcome back, {user.first_name}!\n\nYou're all set. You can now send me files."
+        await update.message.reply_text(welcome_text)
+    else:
+        caption = (
+            f"👋 **Welcome, {user.first_name}!**\n\n"
+            "Before you can use this bot, you need to join our official channel and support group.\n\n"
+            "1️⃣ Join the Channel.\n"
+            "2️⃣ Join the Group.\n"
+            "3️⃣ Click the 'I Have Joined' button below."
+        )
+        try:
+            await update.message.reply_photo(
+                photo=START_IMAGE_URL,
+                caption=caption,
+                reply_markup=get_join_keyboard(),
+                parse_mode="Markdown",
+            )
+        except TelegramError as e:
+            logger.error(f"Error sending start photo: {e}. Sending text instead.")
+            await update.message.reply_text(
+                caption,
+                reply_markup=get_join_keyboard(),
+                parse_mode="Markdown",
+            )
+
+
+async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles inline keyboard button presses."""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "check_join":
+        user_id = query.from_user.id
+        if await is_user_subscribed(user_id, context):
+            success_text = "✅ **Verification Successful!**\n\nThank you for joining! You can now use the bot.\n\nSend me any file to get started."
+            await query.edit_message_caption(caption=success_text, parse_mode="Markdown")
         else:
-            await message.reply_text("User not found.")
-    except (IndexError, ValueError):
-        await message.reply_text("Usage: /removeuser USER_ID")
+            await context.bot.answer_callback_query(
+                callback_query_id=query.id,
+                text="❌ You haven't joined our channel and group yet. Please join both and try again.",
+                show_alert=True,
+            )
 
-@app.on_message(filters.command("listusers") & filters.private)
-@admin_only
-async def list_users_command(client, message):
-    if not AUTHORIZED_USERS:
-        await message.reply_text("No authorized users.")
+
+async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles incoming files, checking for subscription first."""
+    user = update.effective_user
+    if not await is_user_subscribed(user.id, context):
+        await update.message.reply_text(
+            "⚠️ **Access Denied**\n\nPlease join our channel and group first to use this feature.",
+            reply_markup=get_join_keyboard(),
+            parse_mode="Markdown"
+        )
         return
+
+    message = update.message
+    # Determine the file type and get the file object
+    file = message.document or message.video or message.audio or message.photo[-1]
     
-    user_list = "\n".join([f"- {user_id}" for user_id in AUTHORIZED_USERS])
-    await message.reply_text(f"Authorized Users:\n{user_list}")
-
-# --- File Handler ---
-@app.on_message(
-    (filters.document | filters.video | filters.audio | filters.photo) &
-    filters.private
-)
-@authorized_only
-async def file_handler(client, message):
-    if not s3_client:
-        await message.reply_text("Wasabi client not configured.")
+    if not file:
+        await message.reply_text("I couldn't identify the file you sent. Please try again.")
         return
-
-    media = message.document or message.video or message.audio or message.photo
-    if media.file_size > 4 * 1024 * 1024 * 1024:
-        await message.reply_text("File too large (max 4GB).")
-        return
-
-    file_name = media.file_name if hasattr(media, 'file_name') and media.file_name else f"file_{media.file_unique_id}"
-    file_size = media.file_size
+        
+    file_size_mb = file.file_size / (1024 * 1024)
     
-    status_msg = await message.reply_text("Starting download...")
+    await message.reply_text(f"Received your file! Size: {file_size_mb:.2f} MB.")
 
-    try:
-        file_path = await download_file_with_progress(
-            client, message, file_name, file_size, status_msg
-        )
-        
-        if not file_path:
-            await status_msg.edit_text("Download failed.")
-            return
-            
-        await status_msg.edit_text("Download complete. Uploading to Wasabi...")
-        
-        progress_tracker = UploadProgress(status_msg, file_size, asyncio.get_event_loop())
-        success = await upload_to_wasabi(file_path, file_name, status_msg, progress_tracker)
-        
-        if not success:
-            await status_msg.edit_text("Upload failed after retries.")
-            return
-        
-        # Generate presigned URL
-        presigned_url = s3_client.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': WASABI_BUCKET, 'Key': file_name},
-            ExpiresIn=604800  # 7 days
-        )
-        
-        keyboard = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("Download / Stream", url=presigned_url)]]
-        )
-
-        await status_msg.edit_text(
-            f"**Upload Successful!**\n\n"
-            f"**File:** `{file_name}`\n"
-            f"**Size:** {get_readable_file_size(file_size)}\n"
-            f"**Link valid for 7 days**",
-            reply_markup=keyboard
-        )
-        
-    except Exception as e:
-        logger.error(f"Error processing file: {e}")
+    # --- Logic for Small vs. Large Files ---
+    # Telegram bots can download files up to 20 MB.
+    # For files larger than that, you must use a user client (e.g., Pyrogram/Telethon)
+    # with your API_ID and API_HASH.
+    
+    if file_size_mb <= 20:
+        # Handle small files directly with the bot
+        await message.reply_text("This is a small file. I can process it directly.")
+        # Example: Echoing the file back to the user
         try:
-            await status_msg.edit_text(f"Error: {str(e)}")
-        except:
-            await message.reply_text(f"Error: {str(e)}")
-    finally:
-        if 'file_path' in locals() and file_path and os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except:
-                pass
+            if message.document:
+                await message.reply_document(document=file.file_id)
+            elif message.video:
+                await message.reply_video(video=file.file_id)
+            # Add other file types as needed
+        except TelegramError as e:
+            logger.error(f"Error echoing small file: {e}")
+            await message.reply_text("Sorry, I had trouble processing that file.")
+            
+    else:
+        # Handle large files
+        await message.reply_text(
+            "This is a large file (>20 MB).\n"
+            "**Note for Admin:** To handle this, the bot would need to use the Telegram Client API "
+            "(with API_ID and API_HASH) to download and re-upload it. This part is for demonstration."
+        )
+        # In a real-world scenario, you would integrate a library like Pyrogram here.
+        #
+        # Example pseudo-code for Pyrogram integration:
+        #
+        # from pyrogram import Client
+        # app = Client("my_account", api_id=API_ID, api_hash=API_HASH)
+        # async with app:
+        #     await message.reply_text("Downloading large file via user client...")
+        #     file_path = await app.download_media(message)
+        #     await message.reply_text("Uploading large file...")
+        #     await app.send_document("me", file_path)
 
-# --- Main Function ---
-async def main():
-    # Check environment variables
-    required_vars = ["API_ID", "API_HASH", "BOT_TOKEN", "WASABI_ACCESS_KEY", 
-                    "WASABI_SECRET_KEY", "WASABI_BUCKET", "WASABI_REGION", "ADMIN_ID"]
-    
-    missing_vars = [var for var in required_vars if not os.environ.get(var)]
-    if missing_vars:
-        logger.critical(f"Missing environment variables: {missing_vars}")
-        return
 
-    # Create directories
-    os.makedirs("./downloads", exist_ok=True)
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log Errors caused by Updates."""
+    logger.warning('Update "%s" caused error "%s"', update, context.error)
+
+
+def main() -> None:
+    """Start the bot."""
+    if not BOT_TOKEN:
+        raise ValueError("BOT_TOKEN is not set. Please add it to the configuration.")
+
+    # Create the Application and pass it your bot's token.
+    application = Application.builder().token(BOT_TOKEN).build()
     
-    # Clean up old session files
-    for file in os.listdir('.'):
-        if file.startswith('wasabi_bot') and file.endswith('.session'):
-            try:
-                os.remove(file)
-                logger.info(f"Removed old session: {file}")
-            except:
-                pass
+    # --- Register Handlers ---
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CallbackQueryHandler(callback_query_handler))
     
-    # Start the bot
-    try:
-        await app.start()
-        me = await app.get_me()
-        logger.info(f"Bot started as @{me.username}")
-        
-        # Keep running
-        await asyncio.Event().wait()
-        
-    except Exception as e:
-        logger.error(f"Failed to start bot: {e}")
-    finally:
-        if await app.is_connected:
-            await app.stop()
-            logger.info("Bot stopped")
+    # This handler catches any message that contains a document, audio, video, or photo
+    application.add_handler(MessageHandler(
+        filters.Document.ALL | filters.VIDEO | filters.AUDIO | filters.PHOTO,
+        file_handler
+    ))
+    
+    # Register the error handler
+    application.add_error_handler(error_handler)
+
+    # Run the bot until the user presses Ctrl-C
+    logger.info("Bot is starting...")
+    application.run_polling()
+
 
 if __name__ == "__main__":
-    # Run the bot
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+    main()
