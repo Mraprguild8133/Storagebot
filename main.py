@@ -17,7 +17,7 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from telegram.error import TelegramError
+from telegram.error import TelegramError, BadRequest
 
 # Set up logging to see errors
 logging.basicConfig(
@@ -37,35 +37,47 @@ async def is_user_subscribed(user_id: int, context: ContextTypes.DEFAULT_TYPE) -
         return True
         
     try:
-        # Check channel membership
-        channel_member = await context.bot.get_chat_member(
+        # Check both memberships concurrently for better performance
+        channel_check = context.bot.get_chat_member(
             chat_id=config.REQUIRED_CHANNEL_ID, user_id=user_id
         )
-        if channel_member.status not in ["member", "administrator", "creator"]:
-            logger.info(f"User {user_id} is not in the channel.")
-            return False
-
-        # Check group membership
-        group_member = await context.bot.get_chat_member(
+        group_check = context.bot.get_chat_member(
             chat_id=config.REQUIRED_GROUP_ID, user_id=user_id
         )
-        if group_member.status not in ["member", "administrator", "creator"]:
-            logger.info(f"User {user_id} is not in the group.")
+        
+        channel_member, group_member = await asyncio.gather(
+            channel_check, group_check, 
+            return_exceptions=True
+        )
+        
+        # Handle exceptions
+        if isinstance(channel_member, Exception):
+            logger.error(f"Channel check failed for user {user_id}: {channel_member}")
             return False
-
-        logger.info(f"User {user_id} is subscribed to both channel and group.")
-        return True
-    except TelegramError as e:
-        logger.error(f"Error checking subscription for user {user_id}: {e}")
-        # If the bot is not an admin or the chat ID is wrong, it will fail.
-        # Assume not subscribed on error to be safe.
+        if isinstance(group_member, Exception):
+            logger.error(f"Group check failed for user {user_id}: {group_member}")
+            return False
+            
+        return (channel_member.status in ["member", "administrator", "creator"] and 
+                group_member.status in ["member", "administrator", "creator"])
+                
+    except Exception as e:
+        logger.error(f"Unexpected error checking subscription for user {user_id}: {e}")
         return False
 
 
 def get_join_keyboard() -> InlineKeyboardMarkup:
     """Returns the inline keyboard with join links and a verification button."""
-    channel_url = f"https://t.me/{str(config.REQUIRED_CHANNEL_ID).replace('@', '')}"
-    group_url = f"https://t.me/{str(config.REQUIRED_GROUP_ID).replace('@', '')}"
+    # Handle both username-based and ID-based channel/group references
+    if str(config.REQUIRED_CHANNEL_ID).startswith('@'):
+        channel_url = f"https://t.me/{config.REQUIRED_CHANNEL_ID[1:]}"
+    else:
+        channel_url = f"https://t.me/c/{str(config.REQUIRED_CHANNEL_ID).replace('-100', '')}"
+    
+    if str(config.REQUIRED_GROUP_ID).startswith('@'):
+        group_url = f"https://t.me/{config.REQUIRED_GROUP_ID[1:]}"
+    else:
+        group_url = f"https://t.me/c/{str(config.REQUIRED_GROUP_ID).replace('-100', '')}"
     
     keyboard = [
         [InlineKeyboardButton("➡️ Join Our Channel ⬅️", url=channel_url)],
@@ -81,15 +93,15 @@ async def log_new_user(user, context: ContextTypes.DEFAULT_TYPE):
         return
         
     text = (
-        f"**✨ New User Alert ✨**\n\n"
-        f"**User ID:** `{user.id}`\n"
-        f"**First Name:** {user.first_name}\n"
-        f"**Last Name:** {user.last_name or 'N/A'}\n"
-        f"**Username:** @{user.username or 'N/A'}"
+        f"✨ New User Alert ✨\n\n"
+        f"User ID: {user.id}\n"
+        f"First Name: {user.first_name}\n"
+        f"Last Name: {user.last_name or 'N/A'}\n"
+        f"Username: @{user.username or 'N/A'}"
     )
     try:
         await context.bot.send_message(
-            chat_id=config.LOG_CHANNEL_ID, text=text, parse_mode="Markdown"
+            chat_id=config.LOG_CHANNEL_ID, text=text
         )
     except TelegramError as e:
         logger.error(f"Failed to send log message: {e}")
@@ -98,7 +110,7 @@ async def log_new_user(user, context: ContextTypes.DEFAULT_TYPE):
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the /start command."""
     user = update.effective_user
-    logger.info(f"User {user.id} ({user.username}) started the bot.")
+    logger.info(f"User {user.id} ({user.username or 'no-username'}) started the bot.")
     
     # Log the user info, but only if they are new.
     if not context.user_data.get("is_old_user"):
@@ -110,25 +122,30 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text(welcome_text)
     else:
         caption = (
-            f"👋 **Welcome, {user.first_name}!**\n\n"
+            f"👋 Welcome, {user.first_name}!\n\n"
             "Before you can use this bot, you need to join our official channel and support group.\n\n"
             "1️⃣ Join the Channel.\n"
             "2️⃣ Join the Group.\n"
             "3️⃣ Click the 'I Have Joined' button below."
         )
         try:
-            await update.message.reply_photo(
-                photo=config.START_IMAGE_URL,
-                caption=caption,
-                reply_markup=get_join_keyboard(),
-                parse_mode="Markdown",
-            )
-        except TelegramError as e:
+            # Try to send with photo if URL is provided
+            if hasattr(config, 'START_IMAGE_URL') and config.START_IMAGE_URL:
+                await update.message.reply_photo(
+                    photo=config.START_IMAGE_URL,
+                    caption=caption,
+                    reply_markup=get_join_keyboard(),
+                )
+            else:
+                await update.message.reply_text(
+                    caption,
+                    reply_markup=get_join_keyboard(),
+                )
+        except (TelegramError, BadRequest) as e:
             logger.error(f"Error sending start photo: {e}. Sending text instead.")
             await update.message.reply_text(
                 caption,
                 reply_markup=get_join_keyboard(),
-                parse_mode="Markdown",
             )
 
 
@@ -140,8 +157,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
     if query.data == "check_join":
         user_id = query.from_user.id
         if await is_user_subscribed(user_id, context):
-            success_text = "✅ **Verification Successful!**\n\nThank you for joining! You can now use the bot.\n\nSend me any file to get started."
-            await query.edit_message_caption(caption=success_text, parse_mode="Markdown")
+            success_text = "✅ Verification Successful!\n\nThank you for joining! You can now use the bot.\n\nSend me any file to get started."
+            try:
+                await query.edit_message_caption(caption=success_text)
+            except BadRequest:
+                # If the message doesn't have a caption (text message instead of photo)
+                await query.edit_message_text(text=success_text)
         else:
             await context.bot.answer_callback_query(
                 callback_query_id=query.id,
@@ -155,21 +176,26 @@ async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user = update.effective_user
     if not await is_user_subscribed(user.id, context):
         await update.message.reply_text(
-            "⚠️ **Access Denied**\n\nPlease join our channel and group first to use this feature.",
-            reply_markup=get_join_keyboard(),
-            parse_mode="Markdown"
+            "⚠️ Access Denied\n\nPlease join our channel and group first to use this feature.",
+            reply_markup=get_join_keyboard()
         )
         return
 
     message = update.message
     # Determine the file type and get the file object
-    file = message.document or message.video or message.audio or message.photo[-1]
-    
-    if not file:
+    if message.document:
+        file = message.document
+    elif message.video:
+        file = message.video
+    elif message.audio:
+        file = message.audio
+    elif message.photo:
+        file = message.photo[-1]  # Get the highest resolution photo
+    else:
         await message.reply_text("I couldn't identify the file you sent. Please try again.")
         return
         
-    file_size_mb = file.file_size / (1024 * 1024)
+    file_size_mb = file.file_size / (1024 * 1024) if file.file_size else 0
     
     await message.reply_text(f"Received your file! Size: {file_size_mb:.2f} MB.")
 
@@ -180,14 +206,17 @@ async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 await message.reply_document(document=file.file_id)
             elif message.video:
                 await message.reply_video(video=file.file_id)
+            elif message.audio:
+                await message.reply_audio(audio=file.file_id)
+            elif message.photo:
+                await message.reply_photo(photo=file.file_id)
         except TelegramError as e:
-            logger.error(f"Error echoing small file: {e}")
+            logger.error(f"Error echoing file: {e}")
             await message.reply_text("Sorry, I had trouble processing that file.")
-            
     else:
         await message.reply_text(
             "This is a large file (>20 MB).\n"
-            f"**Note for Admin:** To handle this, the bot needs a Telegram Client with API_ID: {config.API_ID}."
+            f"Note for Admin: To handle this, the bot needs a Telegram Client with API_ID: {config.API_ID}."
         )
 
 
@@ -198,11 +227,13 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 def main() -> None:
     """Start the bot."""
-    if not config.BOT_TOKEN or config.BOT_TOKEN == "YOUR_BOT_TOKEN":
+    if not config.BOT_TOKEN or config.BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
         raise ValueError("BOT_TOKEN is not set in config.py. Please add it.")
 
+    # Create the Application
     application = Application.builder().token(config.BOT_TOKEN).build()
     
+    # Add handlers
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CallbackQueryHandler(callback_query_handler))
     application.add_handler(MessageHandler(
@@ -211,29 +242,6 @@ def main() -> None:
     ))
     application.add_error_handler(error_handler)
 
-    logger.info("Bot is starting...")
-    application.run_polling()
-
-
-if __name__ == "__main__":
-    main()
-    # Create the Application and pass it your bot's token.
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # --- Register Handlers ---
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CallbackQueryHandler(callback_query_handler))
-    
-    # This handler catches any message that contains a document, audio, video, or photo
-    application.add_handler(MessageHandler(
-        filters.Document.ALL | filters.VIDEO | filters.AUDIO | filters.PHOTO,
-        file_handler
-    ))
-    
-    # Register the error handler
-    application.add_error_handler(error_handler)
-
-    # Run the bot until the user presses Ctrl-C
     logger.info("Bot is starting...")
     application.run_polling()
 
