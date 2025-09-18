@@ -160,10 +160,10 @@ async def download_file_with_progress(client, message, file_id, file_name, file_
     
     start_time = time.time()
     last_update_time = start_time
-    downloaded = 0
     
-    async def update_progress():
-        nonlocal last_update_time, downloaded
+    # Create a progress callback that accepts the required parameters
+    async def update_progress(current, total):
+        nonlocal last_update_time
         current_time = time.time()
         
         # Throttle updates to avoid FloodWait errors
@@ -172,16 +172,16 @@ async def download_file_with_progress(client, message, file_id, file_name, file_
             
         last_update_time = current_time
         elapsed_time = current_time - start_time
-        speed = downloaded / elapsed_time if elapsed_time > 0 else 0
-        percentage = (downloaded / file_size) * 100
+        speed = current / elapsed_time if elapsed_time > 0 else 0
+        percentage = (current / total) * 100
         
         progress_str = (
             f"**Downloading from Telegram...**\n"
             f"[{'█' * int(percentage / 5)}{' ' * (20 - int(percentage / 5))}] {percentage:.1f}%\n"
-            f"**Done:** {get_readable_file_size(downloaded)}\n"
-            f"**Total:** {get_readable_file_size(file_size)}\n"
+            f"**Done:** {get_readable_file_size(current)}\n"
+            f"**Total:** {get_readable_file_size(total)}\n"
             f"**Speed:** {get_readable_file_size(speed)}/s\n"
-            f"**ETA:** {get_readable_time((file_size - downloaded) / speed) if speed > 0 else '...'}"
+            f"**ETA:** {get_readable_time((total - current) / speed) if speed > 0 else '...'}"
         )
         
         try:
