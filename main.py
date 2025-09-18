@@ -1,343 +1,324 @@
-# -*- coding: utf-8 -*-
-"""
-A Telegram bot that shortens URLs using multiple URL shortening services.
-This script is updated to use python-telegram-bot v20+ and the asyncio library.
-
-This bot does the following:
-1.  Responds to the /start command with a welcome message.
-2.  Responds to the /help command with instructions.
-3.  Allows users to select a URL shortening service with /service command.
-4.  Receives a message from a user.
-5.  Checks if the message is a valid URL.
-6.  Shortens the URL using the selected service.
-7.  Sends the shortened URL back to the user.
-
-To use this bot:
-1.  Install the required libraries:
-    pip install python-telegram-bot aiohttp
-2.  Get a bot token from @BotFather on Telegram.
-3.  Replace 'YOUR_TELEGRAM_BOT_TOKEN' with your actual token.
-4.  Run the script: python modern_bot.py
-"""
-
-import logging
-import aiohttp
+import os
+import time
 import asyncio
-from urllib.parse import urlparse, quote
-from telegram import Update, constants
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackContext
+import logging
+from datetime import datetime
 
-# --- Configuration ---
-# Replace 'YOUR_TELEGRAM_BOT_TOKEN' with the token you get from @BotFather
-TELEGRAM_TOKEN = "8345094798:AAF69DkHwxNmHGZO8itDMsU_qcifncYxpVM"
+from pyrogram import Client, filters
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
+from pyrogram.errors import FloodWait
 
-# Supported URL shortening services
-SERVICES = {
-    'tinyurl': {
-        'name': 'TinyURL',
-        'api_url': 'http://tinyurl.com/api-create.php',
-        'method': 'GET',
-        'param': 'url'
-    },
-    'bitly': {
-        'name': 'Bitly',
-        'api_url': 'https://api-ssl.bitly.com/v4/shorten',
-        'method': 'POST',
-        'headers': {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer YOUR_BITLY_ACCESS_TOKEN'  # Replace with your Bitly access token
-        },
-        'json_key': 'link'
-    },
-    'isgd': {
-        'name': 'is.gd',
-        'api_url': 'https://is.gd/create.php',
-        'method': 'GET',
-        'params': {
-            'format': 'json'
-        },
-        'param': 'url',
-        'json_key': 'shorturl'
-    },
-    'vgd': {
-        'name': 'v.gd',
-        'api_url': 'https://v.gd/create.php',
-        'method': 'GET',
-        'params': {
-            'format': 'json'
-        },
-        'param': 'url',
-        'json_key': 'shorturl'
-    },
-    'cleanuri': {
-        'name': 'CleanURI',
-        'api_url': 'https://cleanuri.com/api/v1/shorten',
-        'method': 'POST',
-        'headers': {
-            'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        'param': 'url',
-        'json_key': 'result_url'
-    },
-    'dagd': {
-        'name': 'da.gd',
-        'api_url': 'https://da.gd/shorten',
-        'method': 'POST',
-        'headers': {
-            'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        'param': 'url'
-    }
-}
+import boto3
+from botocore.exceptions import NoCredentialsError
+from botocore.client import Config
 
-# Default service
-DEFAULT_SERVICE = 'tinyurl'
-
-# --- Bot Setup ---
-
-# Enable logging to see errors and bot activity
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-# set higher logging level for httpx to avoid all GET and POST requests being logged
-logging.getLogger("httpx").setLevel(logging.WARNING)
+# --- Basic Configuration ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Command Handlers ---
+# --- Environment Variables ---
+API_ID = os.environ.get("API_ID")
+API_HASH = os.environ.get("API_HASH")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+WASABI_ACCESS_KEY = os.environ.get("WASABI_ACCESS_KEY")
+WASABI_SECRET_KEY = os.environ.get("WASABI_SECRET_KEY")
+WASABI_BUCKET = os.environ.get("WASABI_BUCKET")
+WASABI_REGION = os.environ.get("WASABI_REGION")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 0)) # Add your Telegram User ID as the main admin
+WELCOME_IMAGE_URL = os.environ.get("WELCOME_IMAGE_URL", "https://placehold.co/1280x720/4B5563/FFFFFF?text=Welcome!")
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Sends a welcome message when the /start command is issued."""
-    user = update.effective_user
-    service_list = "\n".join([f"• {service['name']} ({key})" for key, service in SERVICES.items()])
-    
-    welcome_message = (
-        f"👋 *Welcome, {user.first_name}!* \n\n"
-        "I am your friendly URL Shortener Bot with support for multiple services. "
-        "Just send me any long URL, and I will shorten it for you instantly.\n\n"
-        f"*Currently using:* {SERVICES[context.user_data.get('service', DEFAULT_SERVICE)]['name']}\n\n"
-        "*Available Services:*\n"
-        f"{service_list}\n\n"
-        "Use /service <name> to change the shortening service.\n"
-        "Type /help to see all available commands."
+# --- In-memory "Database" for authorized users ---
+# In a real-world scenario, you would use a proper database like SQLite or PostgreSQL.
+AUTHORIZED_USERS = {ADMIN_ID} if ADMIN_ID else set()
+
+# --- Wasabi S3 Client ---
+try:
+    s3_client = boto3.client(
+        's3',
+        endpoint_url=f'https://s3.{WASABI_REGION}.wasabisys.com',
+        aws_access_key_id=WASABI_ACCESS_KEY,
+        aws_secret_access_key=WASABI_SECRET_KEY,
+        config=Config(signature_version='s3v4'),
+        region_name=WASABI_REGION
     )
-    await update.message.reply_text(welcome_message, parse_mode=constants.ParseMode.MARKDOWN)
+    logger.info("Wasabi client initialized successfully.")
+except Exception as e:
+    logger.error(f"Failed to initialize Wasabi client: {e}")
+    s3_client = None
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Sends a help message with instructions when the /help command is issued."""
-    service_list = "\n".join([f"• {service['name']} ({key})" for key, service in SERVICES.items()])
-    
-    help_text = (
-        "ℹ️ *How to Use Me*\n\n"
-        "1.  **Select a service** (optional): Use /service <name> to choose a URL shortening service.\n"
-        "    *Available services:*\n"
-        f"{service_list}\n\n"
-        "2.  **Send a URL:** Simply paste or type a long URL into the chat and send it.\n"
-        "    *Example:* `https://www.google.com/search?q=very+long+search+query`\n\n"
-        "3.  **Get a Short URL:** I will reply with a shortened URL using your selected service.\n\n"
-        "*Available Commands:*\n"
-        "/start - Start the bot\n"
-        "/help - Show this help message\n"
-        "/service <name> - Change URL shortening service"
-    )
-    await update.message.reply_text(help_text, parse_mode=constants.ParseMode.MARKDOWN)
+# --- Pyrogram Client ---
+app = Client("wasabi_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-async def service_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Allows users to change the URL shortening service."""
-    if not context.args:
-        current_service = context.user_data.get('service', DEFAULT_SERVICE)
-        await update.message.reply_text(
-            f"🛠 *Current service:* {SERVICES[current_service]['name']}\n\n"
-            "To change service, use: /service <name>\n"
-            "Available services:\n" + 
-            "\n".join([f"• {service['name']} ({key})" for key, service in SERVICES.items()]),
-            parse_mode=constants.ParseMode.MARKDOWN
-        )
-        return
-    
-    service_name = context.args[0].lower()
-    if service_name not in SERVICES:
-        await update.message.reply_text(
-            "❌ Invalid service name. Available services:\n" + 
-            "\n".join([f"• {service['name']} ({key})" for key, service in SERVICES.items()])
-        )
-        return
-    
-    context.user_data['service'] = service_name
-    await update.message.reply_text(
-        f"✅ *Service changed to:* {SERVICES[service_name]['name']}",
-        parse_mode=constants.ParseMode.MARKDOWN
-    )
+# --- Decorators ---
+def admin_only(func):
+    """Decorator to restrict access to the admin only."""
+    async def wrapped(client, message):
+        if message.from_user.id != ADMIN_ID:
+            await message.reply_text("You are not authorized to use this command.")
+            return
+        await func(client, message)
+    return wrapped
 
-# --- URL Shortening Functions ---
+def authorized_only(func):
+    """Decorator to restrict access to authorized users only."""
+    async def wrapped(client, message):
+        if message.from_user.id not in AUTHORIZED_USERS:
+            await message.reply_text("You are not a premium user. Please contact the admin.")
+            return
+        await func(client, message)
+    return wrapped
 
-async def shorten_with_tinyurl(url: str) -> str:
-    """Shorten URL using TinyURL service."""
-    async with aiohttp.ClientSession() as session:
-        async with session.get(SERVICES['tinyurl']['api_url'], params={'url': url}) as response:
-            if response.status == 200:
-                return await response.text()
-            else:
-                raise Exception(f"TinyURL API error: {response.status}")
 
-async def shorten_with_bitly(url: str) -> str:
-    """Shorten URL using Bitly service."""
-    # Note: You need to set up a Bitly account and get an access token
-    headers = SERVICES['bitly']['headers'].copy()
-    data = {'long_url': url}
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            SERVICES['bitly']['api_url'], 
-            headers=headers, 
-            json=data
-        ) as response:
-            if response.status == 200:
-                result = await response.json()
-                return result['link']
-            else:
-                error = await response.text()
-                raise Exception(f"Bitly API error: {response.status} - {error}")
+# --- Helper Functions ---
+def get_readable_file_size(size_in_bytes: int) -> str:
+    """Converts a size in bytes to a human-readable format."""
+    if size_in_bytes is None:
+        return "0B"
+    power = 1024
+    n = 0
+    power_labels = {0: '', 1: 'K', 2: 'M', 3: 'G', 4: 'T'}
+    while size_in_bytes > power:
+        size_in_bytes /= power
+        n += 1
+    return f"{size_in_bytes:.2f} {power_labels[n]}B"
 
-async def shorten_with_isgd(url: str) -> str:
-    """Shorten URL using is.gd service."""
-    params = SERVICES['isgd']['params'].copy()
-    params['url'] = url
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.get(SERVICES['isgd']['api_url'], params=params) as response:
-            if response.status == 200:
-                result = await response.json()
-                return result[SERVICES['isgd']['json_key']]
-            else:
-                raise Exception(f"is.gd API error: {response.status}")
+def get_readable_time(seconds: int) -> str:
+    """Converts seconds to a human-readable format."""
+    result = ""
+    if seconds >= 86400:
+        days = seconds // 86400
+        result += f"{days}d "
+        seconds %= 86400
+    if seconds >= 3600:
+        hours = seconds // 3600
+        result += f"{hours}h "
+        seconds %= 3600
+    if seconds >= 60:
+        minutes = seconds // 60
+        result += f"{minutes}m "
+        seconds %= 60
+    result += f"{seconds}s"
+    return result
 
-async def shorten_with_vgd(url: str) -> str:
-    """Shorten URL using v.gd service."""
-    params = SERVICES['vgd']['params'].copy()
-    params['url'] = url
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.get(SERVICES['vgd']['api_url'], params=params) as response:
-            if response.status == 200:
-                result = await response.json()
-                return result[SERVICES['vgd']['json_key']]
-            else:
-                raise Exception(f"v.gd API error: {response.status}")
-
-async def shorten_with_cleanuri(url: str) -> str:
-    """Shorten URL using CleanURI service."""
-    data = {'url': url}
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            SERVICES['cleanuri']['api_url'], 
-            headers=SERVICES['cleanuri']['headers'],
-            data=data
-        ) as response:
-            if response.status == 200:
-                result = await response.json()
-                return result[SERVICES['cleanuri']['json_key']]
-            else:
-                raise Exception(f"CleanURI API error: {response.status}")
-
-async def shorten_with_dagd(url: str) -> str:
-    """Shorten URL using da.gd service."""
-    data = {'url': url}
-    
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            SERVICES['dagd']['api_url'], 
-            headers=SERVICES['dagd']['headers'],
-            data=data
-        ) as response:
-            if response.status == 200:
-                return (await response.text()).strip()
-            else:
-                raise Exception(f"da.gd API error: {response.status}")
-
-# Map service names to their respective functions
-SERVICE_FUNCTIONS = {
-    'tinyurl': shorten_with_tinyurl,
-    'bitly': shorten_with_bitly,
-    'isgd': shorten_with_isgd,
-    'vgd': shorten_with_vgd,
-    'cleanuri': shorten_with_cleanuri,
-    'dagd': shorten_with_dagd
-}
-
-async def shorten_url(service: str, url: str) -> str:
-    """Shorten URL using the specified service."""
-    if service not in SERVICE_FUNCTIONS:
-        raise ValueError(f"Unknown service: {service}")
-    
-    return await SERVICE_FUNCTIONS[service](url)
-
-# --- Message Handler ---
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Shortens the URL sent by the user."""
-    original_url = update.message.text.strip()
-    
-    # Simple validation to check if the message looks like a URL
-    if not (original_url.startswith('http://') or original_url.startswith('https://')):
-        await update.message.reply_text(
-            "❌ That doesn't look like a valid URL. Please send a link starting with `http://` or `https://`.",
-            parse_mode=constants.ParseMode.MARKDOWN
+# --- Bot Commands ---
+@app.on_message(filters.command("start") & filters.private)
+async def start_command(client: Client, message: Message):
+    if message.from_user.id not in AUTHORIZED_USERS:
+        await message.reply_photo(
+            photo=WELCOME_IMAGE_URL,
+            caption="Hello! You are not authorized to use this bot. Please contact the admin for access."
         )
         return
 
-    # Get the selected service or use default
-    service_key = context.user_data.get('service', DEFAULT_SERVICE)
-    service_name = SERVICES[service_key]['name']
-
-    # Inform the user that the process has started
-    processing_message = await update.message.reply_text(
-        f"⚙️ Shortening your URL using {service_name}, please wait..."
+    await message.reply_photo(
+        photo=WELCOME_IMAGE_URL,
+        caption=(
+            f"Hello {message.from_user.first_name}!\n\n"
+            "I can upload files to Wasabi storage and generate shareable links.\n\n"
+            "**Features:**\n"
+            "- Upload files up to 4GB.\n"
+            "- Real-time progress and speed monitoring.\n"
+            "- Generate direct download/streaming links.\n\n"
+            "Simply send me any file to get started!"
+        )
     )
 
+@app.on_message(filters.command("adduser") & filters.private)
+@admin_only
+async def add_user_command(client: Client, message: Message):
     try:
-        # Shorten the URL
-        short_url = await shorten_url(service_key, original_url)
-        
-        message = (
-            f"✅ *Success! Here is your short URL:*\n\n"
-            f"`{short_url}`\n\n"
-            f"🔗 *Original URL:*\n`{original_url}`\n\n"
-            f"🛠 *Service used:* {service_name}"
-        )
-        await processing_message.edit_text(message, parse_mode=constants.ParseMode.MARKDOWN)
+        user_id_to_add = int(message.text.split(" ", 1)[1])
+        AUTHORIZED_USERS.add(user_id_to_add)
+        await message.reply_text(f"User `{user_id_to_add}` has been added successfully.")
+    except (IndexError, ValueError):
+        await message.reply_text("Please provide a valid User ID. Usage: `/adduser 123456789`")
 
+@app.on_message(filters.command("removeuser") & filters.private)
+@admin_only
+async def remove_user_command(client: Client, message: Message):
+    try:
+        user_id_to_remove = int(message.text.split(" ", 1)[1])
+        if user_id_to_remove == ADMIN_ID:
+            await message.reply_text("You cannot remove the admin.")
+            return
+        if user_id_to_remove in AUTHORIZED_USERS:
+            AUTHORIZED_USERS.remove(user_id_to_remove)
+            await message.reply_text(f"User `{user_id_to_remove}` has been removed.")
+        else:
+            await message.reply_text("User not found in the authorized list.")
+    except (IndexError, ValueError):
+        await message.reply_text("Please provide a valid User ID. Usage: `/removeuser 123456789`")
+
+@app.on_message(filters.command("listusers") & filters.private)
+@admin_only
+async def list_users_command(client: Client, message: Message):
+    if not AUTHORIZED_USERS:
+        await message.reply_text("No users are authorized yet.")
+        return
+    
+    user_list = "\n".join([f"- `{user_id}`" for user_id in AUTHORIZED_USERS])
+    await message.reply_text(f"**Authorized Users:**\n{user_list}")
+
+
+# --- File Handling ---
+@app.on_message(
+    (filters.document | filters.video | filters.audio | filters.photo) &
+    filters.private
+)
+@authorized_only
+async def file_handler(client: Client, message: Message):
+    if not s3_client:
+        await message.reply_text("Wasabi client is not configured. Please check the logs.")
+        return
+
+    media = message.document or message.video or message.audio or message.photo
+    if media.file_size > 4 * 1024 * 1024 * 1024:
+        await message.reply_text("File size is larger than 4GB. This is not supported.")
+        return
+
+    file_name = media.file_name if hasattr(media, 'file_name') and media.file_name else f"file_{media.file_unique_id}"
+    file_path = f"./downloads/{file_name}"
+    
+    start_time = time.time()
+    status_msg = await message.reply_text("Starting download from Telegram...")
+
+    # --- Download Progress Callback ---
+    async def download_progress(current, total):
+        elapsed_time = time.time() - start_time
+        speed = current / elapsed_time if elapsed_time > 0 else 0
+        percentage = (current / total) * 100
+        progress_str = (
+            f"**Downloading from Telegram...**\n"
+            f"[{'█' * int(percentage / 5)}{' ' * (20 - int(percentage / 5))}] {percentage:.1f}%\n"
+            f"**Done:** {get_readable_file_size(current)}\n"
+            f"**Total:** {get_readable_file_size(total)}\n"
+            f"**Speed:** {get_readable_file_size(speed)}/s\n"
+            f"**ETA:** {get_readable_time((total - current) / speed) if speed > 0 else '...'}"
+        )
+        try:
+            await status_msg.edit_text(progress_str)
+        except FloodWait as e:
+            await asyncio.sleep(e.x)
+
+    # --- Download from Telegram ---
+    try:
+        await message.download(
+            file_name=file_path,
+            progress=download_progress
+        )
     except Exception as e:
-        # Handle any errors
-        logger.error(f"Error shortening URL: {e}")
-        error_message = (
-            f"❌ Sorry, I couldn't shorten that URL using {service_name}. "
-            "Please try again or use /service to select a different service."
+        logger.error(f"Error downloading from Telegram: {e}")
+        await status_msg.edit_text(f"Failed to download from Telegram: {e}")
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        return
+    
+    await status_msg.edit_text("Download complete. Starting upload to Wasabi...")
+    
+    # --- Upload Progress Callback ---
+    upload_start_time = time.time()
+    total_size = os.path.getsize(file_path)
+    sent = 0
+    
+    class ProgressCallback:
+        def __init__(self, size):
+            self._size = size
+            self._seen_so_far = 0
+            self._lock = asyncio.Lock()
+
+        async def __call__(self, bytes_amount):
+            async with self._lock:
+                self._seen_so_far += bytes_amount
+                elapsed_time = time.time() - upload_start_time
+                speed = self._seen_so_far / elapsed_time if elapsed_time > 0 else 0
+                percentage = (self._seen_so_far / self._size) * 100
+                
+                progress_str = (
+                    f"**Uploading to Wasabi...**\n"
+                    f"[{'█' * int(percentage / 5)}{' ' * (20 - int(percentage / 5))}] {percentage:.1f}%\n"
+                    f"**Done:** {get_readable_file_size(self._seen_so_far)}\n"
+                    f"**Total:** {get_readable_file_size(self._size)}\n"
+                    f"**Speed:** {get_readable_file_size(speed)}/s\n"
+                    f"**ETA:** {get_readable_time((self._size - self._seen_so_far) / speed) if speed > 0 else '...'}"
+                )
+                
+                try:
+                    # Update message only if it's different to avoid flood waits
+                    if status_msg.text != progress_str:
+                         await status_msg.edit_text(progress_str)
+                except FloodWait as e:
+                    await asyncio.sleep(e.x)
+
+    # --- Upload to Wasabi ---
+    try:
+        s3_client.upload_file(
+            file_path,
+            WASABI_BUCKET,
+            file_name,
+            Callback=await ProgressCallback(total_size)
         )
-        await processing_message.edit_text(error_message)
+    except NoCredentialsError:
+        logger.error("Wasabi credentials not available.")
+        await status_msg.edit_text("Error: Wasabi credentials not configured.")
+        return
+    except Exception as e:
+        logger.error(f"Error uploading to Wasabi: {e}")
+        await status_msg.edit_text(f"Failed to upload to Wasabi: {e}")
+        return
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
-# --- Main Bot Execution ---
+    # --- Generate Presigned URL ---
+    try:
+        presigned_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': WASABI_BUCKET, 'Key': file_name},
+            ExpiresIn=3600 * 24 * 7  # 7 days
+        )
+    except Exception as e:
+        logger.error(f"Could not generate presigned URL: {e}")
+        await status_msg.edit_text("Upload successful, but failed to generate a shareable link.")
+        return
 
-def main() -> None:
-    """Start the bot and listen for commands and messages."""
+    # --- Final Message ---
+    end_time = time.time()
+    total_time_taken = get_readable_time(int(end_time - start_time))
     
-    # Create the Application and pass it your bot's token.
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("Download / Stream Now", url=presigned_url)]]
+    )
 
-    # Register command handlers
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("service", service_command))
-
-    # Register a message handler to process URLs
-    # It filters for text messages that are not commands
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    # Start the Bot
-    logger.info("Bot is starting...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
-    logger.info("Bot has been stopped.")
+    await status_msg.edit_text(
+        (
+            f"**Upload Successful!**\n\n"
+            f"**File Name:** `{file_name}`\n"
+            f"**File Size:** {get_readable_file_size(total_size)}\n"
+            f"**Time Taken:** {total_time_taken}\n\n"
+            "The link will be valid for 7 days."
+        ),
+        reply_markup=keyboard
+    )
 
 
-if __name__ == '__main__':
-    main()
+async def main():
+    if not all([API_ID, API_HASH, BOT_TOKEN, WASABI_ACCESS_KEY, WASABI_SECRET_KEY, WASABI_BUCKET, WASABI_REGION, ADMIN_ID]):
+        logger.critical("One or more environment variables are missing. Bot cannot start.")
+        return
+
+    # Create downloads directory if it doesn't exist
+    if not os.path.isdir("downloads"):
+        os.makedirs("downloads")
+        
+    await app.start()
+    logger.info("Bot started successfully!")
+    await asyncio.Event().wait() # Keep the bot running
+
+if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    try:
+        loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        logger.info("Bot shutting down...")
+    finally:
+        loop.run_until_complete(app.stop())
