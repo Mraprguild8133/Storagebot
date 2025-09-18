@@ -6,10 +6,11 @@ from datetime import datetime
 from threading import Lock
 import aiohttp
 import aiofiles
+import random
 
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import FloodWait
+from pyrogram.errors import FloodWait, SessionPasswordNeeded
 
 import boto3
 from botocore.exceptions import NoCredentialsError
@@ -27,9 +28,8 @@ WASABI_ACCESS_KEY = os.environ.get("WASABI_ACCESS_KEY")
 WASABI_SECRET_KEY = os.environ.get("WASABI_SECRET_KEY")
 WASABI_BUCKET = os.environ.get("WASABI_BUCKET")
 WASABI_REGION = os.environ.get("WASABI_REGION")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))  # Add your Telegram User ID as the main admin
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 0)) # Add your Telegram User ID as the main admin
 WELCOME_IMAGE_URL = os.environ.get("WELCOME_IMAGE_URL", "https://placehold.co/1280x720/4B5563/FFFFFF?text=Welcome!")
-
 # --- In-memory "Database" for authorized users ---
 AUTHORIZED_USERS = {ADMIN_ID} if ADMIN_ID else set()
 
@@ -48,8 +48,11 @@ except Exception as e:
     logger.error(f"Failed to initialize Wasabi client: {e}")
     s3_client = None
 
+# --- Generate unique session name to avoid conflicts ---
+SESSION_NAME = f"wasabi_bot_{random.randint(1000, 9999)}"
+
 # --- Pyrogram Client ---
-app = Client("wasabi_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client(SESSION_NAME, api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # --- Thread-safe progress tracking ---
 class UploadProgress:
@@ -151,7 +154,7 @@ def get_readable_time(seconds: int) -> str:
     return result
 
 # --- Fast Download Function ---
-async def download_file_with_progress(client, message, file_id, file_name, file_size, status_msg):
+async def download_file_with_progress(client, message, file_name, file_size, status_msg):
     """Download file with progress using aiohttp for faster downloads"""
     file_path = f"./downloads/{file_name}"
     
@@ -193,19 +196,17 @@ async def download_file_with_progress(client, message, file_id, file_name, file_
     
     try:
         # Use pyrogram's download method which is optimized
-        download_task = app.download_media(
+        file_path = await client.download_media(
             message,
             file_name=file_path,
             progress=update_progress
         )
         
-        # Wait for download to complete
-        await download_task
-        
         # Verify file size
-        downloaded_size = os.path.getsize(file_path)
-        if downloaded_size != file_size:
-            logger.warning(f"File size mismatch: expected {file_size}, got {downloaded_size}")
+        if file_path and os.path.exists(file_path):
+            downloaded_size = os.path.getsize(file_path)
+            if downloaded_size != file_size:
+                logger.warning(f"File size mismatch: expected {file_size}, got {downloaded_size}")
         
         return file_path
         
@@ -299,9 +300,13 @@ async def file_handler(client: Client, message: Message):
     try:
         # Download file with progress
         file_path = await download_file_with_progress(
-            client, message, media.file_id, file_name, file_size, status_msg
+            client, message, file_name, file_size, status_msg
         )
         
+        if not file_path or not os.path.exists(file_path):
+            await status_msg.edit_text("Failed to download the file.")
+            return
+            
         await status_msg.edit_text("Download complete. Starting upload to Wasabi...")
         
         # Upload to Wasabi with progress
@@ -342,10 +347,10 @@ async def file_handler(client: Client, message: Message):
         
     except Exception as e:
         logger.error(f"Error processing file: {e}")
-        await status_msg.edit_text(f"Failed to process file: {e}")
+        await status_msg.edit_text(f"Failed to process file: {str(e)}")
     finally:
         # Clean up downloaded file
-        if 'file_path' in locals() and os.path.exists(file_path):
+        if 'file_path' in locals() and file_path and os.path.exists(file_path):
             os.remove(file_path)
 
 async def main():
@@ -356,17 +361,51 @@ async def main():
     # Create downloads directory if it doesn't exist
     if not os.path.isdir("downloads"):
         os.makedirs("downloads")
+    
+    # Clean up any existing session files to avoid conflicts
+    session_files = [f for f in os.listdir('.') if f.startswith('wasabi_bot') and f.endswith('.session')]
+    for file in session_files:
+        try:
+            os.remove(file)
+            logger.info(f"Removed old session file: {file}")
+        except:
+            pass
+    
+    try:
+        await app.start()
+        logger.info("Bot started successfully!")
         
-    await app.start()
-    logger.info("Bot started successfully!")
-    await asyncio.Event().wait()  # Keep the bot running
+        # Get bot info to verify connection
+        me = await app.get_me()
+        logger.info(f"Bot is running as @{me.username}")
+        
+        await asyncio.Event().wait()  # Keep the bot running
+        
+    except SessionPasswordNeeded:
+        logger.error("Two-factor authentication is enabled. This bot cannot handle 2FA.")
+    except Exception as e:
+        logger.error(f"Failed to start bot: {e}")
+    finally:
+        if app.is_connected:
+            await app.stop()
+            logger.info("Bot stopped successfully.")
 
 if __name__ == "__main__":
+    # Clear any existing session files before starting
+    session_files = [f for f in os.listdir('.') if f.startswith('wasabi_bot') and f.endswith('.session')]
+    for file in session_files:
+        try:
+            os.remove(file)
+            logger.info(f"Removed old session file: {file}")
+        except:
+            pass
+            
     loop = asyncio.get_event_loop()
     try:
         loop.run_until_complete(main())
     except KeyboardInterrupt:
         logger.info("Bot shutting down...")
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
     finally:
-        if app.is_connected:
-            loop.run_until_complete(app.stop())
+        loop.close()
