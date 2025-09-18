@@ -7,6 +7,7 @@ from threading import Lock
 import aiohttp
 import aiofiles
 import random
+import functools
 
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
@@ -28,8 +29,9 @@ WASABI_ACCESS_KEY = os.environ.get("WASABI_ACCESS_KEY")
 WASABI_SECRET_KEY = os.environ.get("WASABI_SECRET_KEY")
 WASABI_BUCKET = os.environ.get("WASABI_BUCKET")
 WASABI_REGION = os.environ.get("WASABI_REGION")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", 0)) # Add your Telegram User ID as the main admin
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 0))  # Add your Telegram User ID as the main admin
 WELCOME_IMAGE_URL = os.environ.get("WELCOME_IMAGE_URL", "https://placehold.co/1280x720/4B5563/FFFFFF?text=Welcome!")
+
 # --- In-memory "Database" for authorized users ---
 AUTHORIZED_USERS = {ADMIN_ID} if ADMIN_ID else set()
 
@@ -56,13 +58,14 @@ app = Client(SESSION_NAME, api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN
 
 # --- Thread-safe progress tracking ---
 class UploadProgress:
-    def __init__(self, status_msg, total_size):
+    def __init__(self, status_msg, total_size, loop):
         self.status_msg = status_msg
         self.total_size = total_size
         self.uploaded = 0
         self.start_time = time.time()
         self.lock = Lock()
         self.last_update_time = 0
+        self.loop = loop
         
     def update(self, bytes_amount):
         with self.lock:
@@ -92,7 +95,7 @@ class UploadProgress:
             # Schedule the message update in the asyncio event loop
             asyncio.run_coroutine_threadsafe(
                 self.update_message(progress_str),
-                asyncio.get_event_loop()
+                self.loop
             )
     
     async def update_message(self, progress_str):
@@ -310,14 +313,16 @@ async def file_handler(client: Client, message: Message):
         await status_msg.edit_text("Download complete. Starting upload to Wasabi...")
         
         # Upload to Wasabi with progress
-        upload_progress = UploadProgress(status_msg, file_size)
+        upload_progress = UploadProgress(status_msg, file_size, asyncio.get_event_loop())
         
-        s3_client.upload_file(
-            file_path,
-            WASABI_BUCKET,
-            file_name,
-            Callback=upload_progress.update
-        )
+        # Use upload_fileobj instead of upload_file for progress tracking
+        with open(file_path, 'rb') as file_data:
+            s3_client.upload_fileobj(
+                file_data,
+                WASABI_BUCKET,
+                file_name,
+                Callback=upload_progress.update
+            )
         
         # Generate Presigned URL
         presigned_url = s3_client.generate_presigned_url(
@@ -391,15 +396,6 @@ async def main():
             logger.info("Bot stopped successfully.")
 
 if __name__ == "__main__":
-    # Clear any existing session files before starting
-    session_files = [f for f in os.listdir('.') if f.startswith('wasabi_bot') and f.endswith('.session')]
-    for file in session_files:
-        try:
-            os.remove(file)
-            logger.info(f"Removed old session file: {file}")
-        except:
-            pass
-            
     loop = asyncio.get_event_loop()
     try:
         loop.run_until_complete(main())
