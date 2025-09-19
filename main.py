@@ -74,19 +74,24 @@ MEDIA_EXTENSIONS = {
     'audio':['.mp3','.m4a','.ogg','.wav','.flac'],
     'image':['.jpg','.jpeg','.png','.gif','.bmp','.webp']
 }
+
 def humanbytes(size):
     if not size: return "0 B"
     for unit in ["B","KB","MB","GB","TB"]:
         if size<1024: return f"{size:.2f} {unit}"
         size/=1024
+
 def sanitize_filename(name,max_length=150):
     return re.sub(r'[^a-zA-Z0-9._-]', '_', name)[:max_length]
+
 def get_user_folder(user_id): return f"user_{user_id}"
+
 def get_file_type(filename):
     ext=os.path.splitext(filename)[1].lower()
     for t,exts in MEDIA_EXTENSIONS.items():
         if ext in exts: return t
     return 'other'
+
 def generate_player_url(filename,presigned_url):
     if not required_env_vars["RENDER_URL"]: return None
     ftype=get_file_type(filename)
@@ -96,26 +101,25 @@ def generate_player_url(filename,presigned_url):
     return None
 
 # -----------------------------
-# Progress Callbacks
+# Progress Callbacks (Synchronous)
 # -----------------------------
-async def progress_callback(current,total,message,start_time,prefix="Downloading"):
-    now=time.time()
-    diff=max(now-start_time,1)
-    percentage=current*100/total
-    speed=current/diff
-    speed_mb=speed/(1024*1024)
-    eta=(total-current)/speed if speed>0 else 0
-    eta=time.strftime("%H:%M:%S", time.gmtime(eta))
-    icon="⚡" if speed_mb<20 else "⚡⚡" if speed_mb<50 else "🚀" if speed_mb<150 else "🔥 LIGHTNING"
-    bar_len=20
-    filled=int(bar_len*percentage/100)
-    bar="█"*filled+"—"*(bar_len-filled)
+def download_progress(current, total, message, start_time, prefix="Downloading"):
+    now = time.time()
+    diff = max(now - start_time, 1)
+    percentage = current * 100 / total
+    speed = current / diff
+    speed_mb = speed / (1024*1024)
+    eta = (total - current)/speed if speed>0 else 0
+    eta = time.strftime("%H:%M:%S", time.gmtime(eta))
+    icon = "⚡" if speed_mb<20 else "⚡⚡" if speed_mb<50 else "🚀" if speed_mb<150 else "🔥 LIGHTNING"
+    bar_len = 20
+    filled = int(bar_len*percentage/100)
+    bar = "█"*filled+"—"*(bar_len-filled)
     text=f"{prefix}...\n[{bar}] {percentage:.2f}%\n📦 {humanbytes(current)} / {humanbytes(total)}\n{icon} {speed_mb:.2f} MB/s\n⏳ ETA: {eta}"
-    try: await message.edit_text(text)
-    except: pass
+    asyncio.get_event_loop().create_task(message.edit_text(text))
 
 def upload_progress(chunk):
-    upload_progress.current+=chunk
+    upload_progress.current += chunk
     now=time.time()
     diff=max(now-upload_progress.start_time,1)
     speed=upload_progress.current/diff
@@ -128,7 +132,7 @@ def upload_progress(chunk):
     filled=int(bar_len*percentage/100)
     bar="█"*filled+"—"*(bar_len-filled)
     text=f"☁️ Uploading...\n[{bar}] {percentage:.2f}%\n📦 {humanbytes(upload_progress.current)} / {humanbytes(upload_progress.total)}\n{icon} {speed_mb:.2f} MB/s\n⏳ ETA: {eta}"
-    asyncio.run_coroutine_threadsafe(upload_progress.message.edit_text(text), upload_progress.loop)
+    asyncio.get_event_loop().create_task(upload_progress.message.edit_text(text))
 
 # -----------------------------
 # Telegram Bot Handlers
@@ -148,19 +152,42 @@ async def upload_file_handler(client,message:Message):
     status=await message.reply_text("Starting download...")
     start_time=time.time()
     try:
-        # Download with max speed
-        file_path=await message.download(file_name=DOWNLOAD_DIR, progress=progress_callback, progress_args=(status,start_time,"Downloading"))
+        # Download
+        file_path_str = await message.download(
+            file_name=DOWNLOAD_DIR,
+            progress=download_progress,
+            progress_args=(status,start_time,"Downloading")
+        )
+        file_path = Path(file_path_str)
         file_name=sanitize_filename(file_path.name)
         user_file_name=f"{get_user_folder(message.from_user.id)}/{file_name}"
-        # Upload with extreme speed
+
+        # Upload
         upload_progress.current=0
         upload_progress.total=size
         upload_progress.start_time=time.time()
         upload_progress.loop=asyncio.get_event_loop()
         upload_progress.message=status
-        config=TransferConfig(multipart_threshold=64*1024*1024, multipart_chunksize=64*1024*1024, max_concurrency=25, use_threads=True)
-        await asyncio.to_thread(s3_client.upload_file, file_path, required_env_vars["WASABI_BUCKET"], user_file_name, Callback=upload_progress, Config=config)
-        presigned_url=s3_client.generate_presigned_url('get_object', Params={'Bucket':required_env_vars["WASABI_BUCKET"],'Key':user_file_name}, ExpiresIn=86400)
+        config=TransferConfig(
+            multipart_threshold=64*1024*1024,
+            multipart_chunksize=64*1024*1024,
+            max_concurrency=25,
+            use_threads=True
+        )
+        await asyncio.to_thread(
+            s3_client.upload_file,
+            str(file_path),
+            required_env_vars["WASABI_BUCKET"],
+            user_file_name,
+            Callback=upload_progress,
+            Config=config
+        )
+
+        presigned_url=s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket':required_env_vars["WASABI_BUCKET"],'Key':user_file_name},
+            ExpiresIn=86400
+        )
         player_url=generate_player_url(file_name,presigned_url)
         resp=f"✅ Upload complete!\n\n📂 File: {file_name}\n📦 Size: {humanbytes(size) if size else 'N/A'}\n🔗 Direct Link: {presigned_url}"
         if player_url: resp+=f"\n\n🎥 Player URL: {player_url}"
@@ -179,3 +206,4 @@ if __name__=="__main__":
     Thread(target=run_flask,daemon=True).start()
     print("🚀 Starting Wasabi Storage Bot at INSTANT SPEED...")
     app.run()
+    
