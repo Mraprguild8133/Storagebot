@@ -3,9 +3,13 @@ import re
 import base64
 import asyncio
 import traceback
+import gzip
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 import boto3
+from botocore.config import Config
 from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.types import Message
@@ -34,6 +38,11 @@ if missing_vars:
     raise Exception(f"Missing environment variables: {', '.join(missing_vars)}")
 
 # -----------------------------
+# Initialize Thread Pool for parallel operations
+# -----------------------------
+thread_pool = ThreadPoolExecutor(max_workers=10)
+
+# -----------------------------
 # Initialize Pyrogram Client
 # -----------------------------
 app = Client(
@@ -44,14 +53,31 @@ app = Client(
 )
 
 # -----------------------------
-# Initialize Wasabi S3 client
+# Initialize Wasabi S3 client with optimized configuration
 # -----------------------------
 wasabi_endpoint_url = f'https://s3.{required_env_vars["WASABI_REGION"]}.wasabisys.com'
+
+# Configure for better performance
+s3_config = Config(
+    max_pool_connections=50,  # Increased connection pool
+    retries={'max_attempts': 3, 'mode': 'standard'},
+    s3={'addressing_style': 'virtual'},  # Virtual-hosted style addressing is faster
+)
+
 s3_client = boto3.client(
     's3',
     endpoint_url=wasabi_endpoint_url,
     aws_access_key_id=required_env_vars["WASABI_ACCESS_KEY"],
-    aws_secret_access_key=required_env_vars["WASABI_SECRET_KEY"]
+    aws_secret_access_key=required_env_vars["WASABI_SECRET_KEY"],
+    config=s3_config
+)
+
+s3_resource = boto3.resource(
+    's3',
+    endpoint_url=wasabi_endpoint_url,
+    aws_access_key_id=required_env_vars["WASABI_ACCESS_KEY"],
+    aws_secret_access_key=required_env_vars["WASABI_SECRET_KEY"],
+    config=s3_config
 )
 
 # -----------------------------
@@ -87,6 +113,8 @@ def run_flask():
 # Constants & Helpers
 # -----------------------------
 MAX_FILE_SIZE = 2000 * 1024 * 1024  # 2GB
+MULTIPART_THRESHOLD = 100 * 1024 * 1024  # 100MB - use multipart upload for files larger than this
+CHUNK_SIZE = 50 * 1024 * 1024  # 50MB chunks for multipart upload
 DOWNLOAD_DIR = Path("./downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
@@ -95,6 +123,8 @@ MEDIA_EXTENSIONS = {
     'audio': ['.mp3', '.m4a', '.ogg', '.wav', '.flac'],
     'image': ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']
 }
+
+TEXT_EXTENSIONS = ['.txt', '.log', '.csv', '.json', '.xml', '.html', '.css', '.js', '.py', '.md']
 
 def humanbytes(size):
     if not size:
@@ -134,6 +164,107 @@ def generate_player_url(filename, presigned_url):
         return f"{required_env_vars['RENDER_URL']}/player/{file_type}/{encoded_url}"
     return None
 
+def compress_file_if_text(input_path, output_path):
+    """Compress text files to reduce upload size"""
+    ext = os.path.splitext(input_path)[1].lower()
+    if ext in TEXT_EXTENSIONS:
+        with open(input_path, 'rb') as f_in:
+            with gzip.open(output_path, 'wb') as f_out:
+                f_out.writelines(f_in)
+        return True
+    return False
+
+async def upload_file_to_wasabi(file_path, user_file_name, file_size):
+    """Upload file to Wasabi with multipart support for large files"""
+    if file_size > MULTIPART_THRESHOLD:
+        # Use multipart upload for large files
+        return await asyncio.get_event_loop().run_in_executor(
+            thread_pool, 
+            partial(upload_multipart, file_path, user_file_name, file_size)
+        )
+    else:
+        # Use regular upload for smaller files
+        return await asyncio.get_event_loop().run_in_executor(
+            thread_pool,
+            partial(s3_client.upload_file, str(file_path), required_env_vars["WASABI_BUCKET"], user_file_name)
+        )
+
+def upload_multipart(file_path, user_file_name, file_size):
+    """Upload large files using multipart upload"""
+    # Create multipart upload
+    mpu = s3_client.create_multipart_upload(
+        Bucket=required_env_vars["WASABI_BUCKET"],
+        Key=user_file_name
+    )
+    
+    mpu_id = mpu["UploadId"]
+    parts = []
+    
+    try:
+        # Upload parts in parallel
+        part_procs = []
+        part_number = 1
+        
+        with open(file_path, 'rb') as f:
+            while True:
+                data = f.read(CHUNK_SIZE)
+                if not data:
+                    break
+                
+                # Upload part in thread pool
+                part_procs.append(
+                    thread_pool.submit(
+                        upload_part,
+                        user_file_name,
+                        mpu_id,
+                        part_number,
+                        data
+                    )
+                )
+                part_number += 1
+        
+        # Wait for all parts to complete
+        for future in part_procs:
+            parts.append(future.result())
+        
+        # Sort parts by part number
+        parts.sort(key=lambda x: x['PartNumber'])
+        
+        # Complete multipart upload
+        s3_client.complete_multipart_upload(
+            Bucket=required_env_vars["WASABI_BUCKET"],
+            Key=user_file_name,
+            UploadId=mpu_id,
+            MultipartUpload={'Parts': parts}
+        )
+        
+    except Exception as e:
+        # Abort multipart upload on error
+        s3_client.abort_multipart_upload(
+            Bucket=required_env_vars["WASABI_BUCKET"],
+            Key=user_file_name,
+            UploadId=mpu_id
+        )
+        raise e
+
+def upload_part(user_file_name, mpu_id, part_number, data):
+    """Upload a single part of a multipart upload"""
+    part = s3_client.upload_part(
+        Bucket=required_env_vars["WASABI_BUCKET"],
+        Key=user_file_name,
+        PartNumber=part_number,
+        UploadId=mpu_id,
+        Body=data
+    )
+    return {'PartNumber': part_number, 'ETag': part['ETag']}
+
+async def download_file_from_wasabi(user_file_name, local_path):
+    """Download file from Wasabi with progress tracking"""
+    return await asyncio.get_event_loop().run_in_executor(
+        thread_pool,
+        partial(s3_client.download_file, required_env_vars["WASABI_BUCKET"], user_file_name, str(local_path))
+    )
+
 # -----------------------------
 # Telegram Bot Handlers
 # -----------------------------
@@ -145,7 +276,8 @@ async def start_command(client, message: Message):
         "Use /download <filename> to download files\n"
         "Use /list to see your files\n"
         "Use /play <filename> to get a web player link (for media files)\n\n"
-        "⚠️ Maximum file size: 2GB"
+        "⚠️ Maximum file size: 2GB\n"
+        "⚡ Optimized for fast uploads and downloads"
     )
     if required_env_vars["RENDER_URL"]:
         welcome_text += "\n\n🎥 Web player support is enabled!"
@@ -181,22 +313,43 @@ async def upload_file_handler(client, message: Message):
     status_message = await message.reply_text("Downloading file...")
 
     try:
+        # Download file
         file_path = await message.download(file_name=DOWNLOAD_DIR / file_name)
         user_file_name = f"{get_user_folder(message.from_user.id)}/{file_name}"
 
-        await status_message.edit_text("Uploading to Wasabi storage...")
+        # Check if it's a text file and compress if needed
+        compressed_path = None
+        original_size = os.path.getsize(file_path)
         
-        await asyncio.to_thread(
-            s3_client.upload_file,
-            str(file_path),
-            required_env_vars["WASABI_BUCKET"],
-            user_file_name
-        )
+        if any(file_name.lower().endswith(ext) for ext in TEXT_EXTENSIONS):
+            compressed_path = DOWNLOAD_DIR / f"compressed_{file_name}.gz"
+            if compress_file_if_text(file_path, compressed_path):
+                # Use compressed file for upload
+                file_path = compressed_path
+                file_name += ".gz"
+                user_file_name += ".gz"
+                size = os.path.getsize(file_path)
+                await status_message.edit_text(
+                    f"Compressed text file from {humanbytes(original_size)} to {humanbytes(size)}. "
+                    "Now uploading to Wasabi storage..."
+                )
+            else:
+                await status_message.edit_text("Uploading to Wasabi storage...")
+        else:
+            await status_message.edit_text("Uploading to Wasabi storage...")
+        
+        # Upload to Wasabi (with multipart support for large files)
+        await upload_file_to_wasabi(file_path, user_file_name, size)
 
-        presigned_url = s3_client.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': required_env_vars["WASABI_BUCKET"], 'Key': user_file_name},
-            ExpiresIn=86400  # 24 hours
+        # Generate presigned URL
+        presigned_url = await asyncio.get_event_loop().run_in_executor(
+            thread_pool,
+            partial(
+                s3_client.generate_presigned_url,
+                'get_object',
+                Params={'Bucket': required_env_vars["WASABI_BUCKET"], 'Key': user_file_name},
+                ExpiresIn=86400  # 24 hours
+            )
         )
 
         player_url = generate_player_url(file_name, presigned_url)
@@ -219,8 +372,11 @@ async def upload_file_handler(client, message: Message):
         await status_message.edit_text(f"Error: {str(e)}")
     finally:
         try:
+            # Clean up downloaded and compressed files
             if 'file_path' in locals() and os.path.exists(file_path):
                 os.remove(file_path)
+            if compressed_path and os.path.exists(compressed_path):
+                os.remove(compressed_path)
         except Exception as e:
             print(f"Error cleaning up file: {e}")
 
@@ -231,9 +387,13 @@ async def upload_file_handler(client, message: Message):
 async def list_files(client, message: Message):
     try:
         user_folder = get_user_folder(message.from_user.id)
-        response = s3_client.list_objects_v2(
-            Bucket=required_env_vars["WASABI_BUCKET"],
-            Prefix=user_folder + "/"
+        response = await asyncio.get_event_loop().run_in_executor(
+            thread_pool,
+            partial(
+                s3_client.list_objects_v2,
+                Bucket=required_env_vars["WASABI_BUCKET"],
+                Prefix=user_folder + "/"
+            )
         )
         
         if 'Contents' not in response:
@@ -263,11 +423,29 @@ async def download_file(client, message: Message):
         user_folder = get_user_folder(message.from_user.id)
         user_file_name = f"{user_folder}/{filename}"
         
+        # Check if file exists
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                thread_pool,
+                partial(
+                    s3_client.head_object,
+                    Bucket=required_env_vars["WASABI_BUCKET"],
+                    Key=user_file_name
+                )
+            )
+        except:
+            await message.reply_text("File not found.")
+            return
+        
         # Generate a presigned URL for downloading
-        presigned_url = s3_client.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': required_env_vars["WASABI_BUCKET"], 'Key': user_file_name},
-            ExpiresIn=3600  # 1 hour
+        presigned_url = await asyncio.get_event_loop().run_in_executor(
+            thread_pool,
+            partial(
+                s3_client.generate_presigned_url,
+                'get_object',
+                Params={'Bucket': required_env_vars["WASABI_BUCKET"], 'Key': user_file_name},
+                ExpiresIn=3600  # 1 hour
+            )
         )
         
         await message.reply_text(
@@ -291,19 +469,27 @@ async def play_file(client, message: Message):
         
         # Check if file exists
         try:
-            s3_client.head_object(
-                Bucket=required_env_vars["WASABI_BUCKET"],
-                Key=user_file_name
+            await asyncio.get_event_loop().run_in_executor(
+                thread_pool,
+                partial(
+                    s3_client.head_object,
+                    Bucket=required_env_vars["WASABI_BUCKET"],
+                    Key=user_file_name
+                )
             )
         except:
             await message.reply_text("File not found.")
             return
         
         # Generate a presigned URL
-        presigned_url = s3_client.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': required_env_vars["WASABI_BUCKET"], 'Key': user_file_name},
-            ExpiresIn=86400  # 24 hours
+        presigned_url = await asyncio.get_event_loop().run_in_executor(
+            thread_pool,
+            partial(
+                s3_client.generate_presigned_url,
+                'get_object',
+                Params={'Bucket': required_env_vars["WASABI_BUCKET"], 'Key': user_file_name},
+                ExpiresIn=86400  # 24 hours
+            )
         )
         
         player_url = generate_player_url(filename, presigned_url)
