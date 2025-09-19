@@ -8,7 +8,7 @@ from pathlib import Path
 import boto3
 from dotenv import load_dotenv
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import Message
 
 from flask import Flask, render_template
 from threading import Thread
@@ -171,11 +171,11 @@ async def upload_file_handler(client, message: Message):
             f"Direct Link: {presigned_url}"
         )
 
+        # Add player URL to response if available (as text, not button)
         if player_url:
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🎥 Open in Web Player", url=player_url)]])
-            await status_message.edit_text(response_text, reply_markup=keyboard)
-        else:
-            await status_message.edit_text(response_text)
+            response_text += f"\n\nPlayer URL: {player_url}"
+
+        await status_message.edit_text(response_text)
 
     except Exception as e:
         print("Error:", traceback.format_exc())
