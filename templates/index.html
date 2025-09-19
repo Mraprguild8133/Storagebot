@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Telegram Bot Status</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      text-align: center;
+      padding: 50px;
+      background-color: #f0f2f5;
+    }
+    h1 {
+      color: #333;
+    }
+    .status {
+      margin-top: 30px;
+      font-size: 24px;
+      padding: 20px;
+      border-radius: 10px;
+      display: inline-block;
+    }
+    .online {
+      color: #ffffff;
+      background-color: #28a745;
+    }
+    .offline {
+      color: #ffffff;
+      background-color: #dc3545;
+    }
+  </style>
+</head>
+<body>
+  <h1>Telegram Bot Runtime Check</h1>
+  <div id="bot-status" class="status online">✅ Bot is running!</div>
+
+  <script>
+    // Example of dynamic status check
+    async function checkStatus() {
+      try {
+        const response = await fetch("/status"); // endpoint from Flask or API
+        const data = await response.json();
+        const statusDiv = document.getElementById("bot-status");
+
+        if (data.online) {
+          statusDiv.textContent = "✅ Bot is running!";
+          statusDiv.className = "status online";
+        } else {
+          statusDiv.textContent = "❌ Bot is offline!";
+          statusDiv.className = "status offline";
+        }
+      } catch (error) {
+        const statusDiv = document.getElementById("bot-status");
+        statusDiv.textContent = "⚠️ Unable to reach server!";
+        statusDiv.className = "status offline";
+      }
+    }
+
+    // Optional: Refresh status every 10 seconds
+    setInterval(checkStatus, 10000);
+    checkStatus();
+  </script>
+</body>
+</html>
