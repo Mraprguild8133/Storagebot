@@ -14,6 +14,13 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from flask import Flask, render_template
 
+# Optional: uvloop for faster async
+try:
+    import uvloop
+    asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+except ImportError:
+    pass  # fallback to default asyncio
+
 # -----------------------------
 # Load environment variables
 # -----------------------------
@@ -120,17 +127,22 @@ def generate_player_url(filename, presigned_url):
 async def progress_callback(current, total, message, start_time, prefix="Downloading"):
     now = time.time()
     diff = max(now - start_time, 1)
-
     percentage = current * 100 / total
     speed = current / diff
     speed_mb = speed / (1024 * 1024)
     eta = (total - current) / speed if speed > 0 else 0
     eta = time.strftime("%H:%M:%S", time.gmtime(eta))
 
-    speed_icon = "⚡" if speed_mb < 5 else "⚡⚡" if speed_mb < 20 else "🚀"
+    # Turbo icons
+    speed_icon = (
+        "⚡" if speed_mb < 20 else
+        "⚡⚡" if speed_mb < 50 else
+        "🚀" if speed_mb < 150 else
+        "🔥🔥 LIGHTNING"
+    )
 
-    # progress bar
-    bar_length = 15
+    # Progress bar
+    bar_length = 20
     filled = int(bar_length * percentage / 100)
     bar = "█" * filled + "—" * (bar_length - filled)
 
@@ -141,7 +153,6 @@ async def progress_callback(current, total, message, start_time, prefix="Downloa
         f"{speed_icon} Speed: {speed_mb:.2f} MB/s\n"
         f"⏳ ETA: {eta}"
     )
-
     try:
         await message.edit_text(text)
     except:
@@ -151,16 +162,20 @@ def upload_progress(chunk):
     upload_progress.current += chunk
     now = time.time()
     diff = max(now - upload_progress.start_time, 1)
-
     speed = upload_progress.current / diff
     speed_mb = speed / (1024 * 1024)
     percentage = upload_progress.current * 100 / upload_progress.total
     eta = (upload_progress.total - upload_progress.current) / speed if speed > 0 else 0
     eta = time.strftime("%H:%M:%S", time.gmtime(eta))
 
-    speed_icon = "⚡" if speed_mb < 5 else "⚡⚡" if speed_mb < 20 else "🚀"
+    speed_icon = (
+        "⚡" if speed_mb < 20 else
+        "⚡⚡" if speed_mb < 50 else
+        "🚀" if speed_mb < 150 else
+        "🔥🔥 LIGHTNING"
+    )
 
-    bar_length = 15
+    bar_length = 20
     filled = int(bar_length * percentage / 100)
     bar = "█" * filled + "—" * (bar_length - filled)
 
@@ -210,6 +225,7 @@ async def upload_file_handler(client, message: Message):
     start_time = time.time()
 
     try:
+        # Download from Telegram (async, max speed)
         file_path = await message.download(
             file_name=DOWNLOAD_DIR,
             progress=progress_callback,
@@ -219,17 +235,19 @@ async def upload_file_handler(client, message: Message):
         file_name = sanitize_filename(os.path.basename(file_path))
         user_file_name = f"{get_user_folder(message.from_user.id)}/{file_name}"
 
-        # Upload with progress
+        # Upload with extreme speed
         upload_progress.current = 0
         upload_progress.total = size
         upload_progress.start_time = time.time()
         upload_progress.loop = asyncio.get_event_loop()
         upload_progress.message = status_message
 
-        config = TransferConfig(multipart_threshold=8 * 1024 * 1024,
-                                max_concurrency=10,
-                                multipart_chunksize=8 * 1024 * 1024,
-                                use_threads=True)
+        config = TransferConfig(
+            multipart_threshold=64 * 1024 * 1024,   # 64MB chunks
+            multipart_chunksize=64 * 1024 * 1024,
+            max_concurrency=25,
+            use_threads=True
+        )
 
         await asyncio.to_thread(
             s3_client.upload_file,
@@ -277,6 +295,6 @@ if __name__ == "__main__":
     print("Starting Flask server on port 8000...")
     Thread(target=run_flask, daemon=True).start()
 
-    print("Starting Wasabi Storage Bot...")
+    print("Starting Wasabi Storage Bot at EXTREME SPEED...")
     app.run()
-        
+    
