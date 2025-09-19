@@ -4,7 +4,7 @@ import boto3
 import asyncio
 import re
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from dotenv import load_dotenv
@@ -21,7 +21,7 @@ required_env_vars = {
     "WASABI_SECRET_KEY": os.getenv("WASABI_SECRET_KEY"),
     "WASABI_BUCKET": os.getenv("WASABI_BUCKET"),
     "WASABI_REGION": os.getenv("WASABI_REGION"),
-    "RENDER_URL": os.getenv("RENDER_URL", ""),  # Your Render app URL
+    "RENDER_URL": os.getenv("RENDER_URL", "").rstrip('/'),  # Your Render app URL
 }
 
 # Check for missing environment variables
@@ -90,9 +90,14 @@ def generate_player_url(filename, presigned_url):
         return None
         
     file_type = get_file_type(filename)
-    if file_type in ['video', 'audio']:
-        encoded_url = quote(presigned_url, safe='')
-        return f"{required_env_vars['RENDER_URL']}/player?url={encoded_url}&type={file_type}&title={quote(filename)}"
+    if file_type in ['video', 'audio', 'image']:
+        # Properly encode all parameters
+        params = {
+            'url': presigned_url,
+            'type': file_type,
+            'title': filename
+        }
+        return f"{required_env_vars['RENDER_URL']}/player?{urlencode(params)}"
     return None
 
 # Bot handlers
@@ -157,7 +162,7 @@ async def upload_file_handler(client, message: Message):
         response_text = (
             f"✅ Upload complete!\n\n"
             f"File: {file_name}\n"
-            f"Size: {humanbytes(media.file_size) if hasattr(media, 'file_size') else 'N/A'}\n"
+            f"Size: {humanbytes(media.file_size) if hasattr(media, 'file_size') and media.file_size else 'N/A'}\n"
             f"Direct Link: {presigned_url}"
         )
         
@@ -173,7 +178,7 @@ async def upload_file_handler(client, message: Message):
     except Exception as e:
         await status_message.edit_text(f"Error: {str(e)}")
     finally:
-        if os.path.exists(file_path):
+        if 'file_path' in locals() and os.path.exists(file_path):
             os.remove(file_path)
 
 @app.on_message(filters.command("download"))
