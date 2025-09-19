@@ -34,8 +34,8 @@ required_env_vars = {
     "WASABI_BUCKET": os.getenv("WASABI_BUCKET"),
     "WASABI_REGION": os.getenv("WASABI_REGION"),
     "RENDER_URL": os.getenv("RENDER_URL", "").rstrip('/'),
-    "MAX_WORKERS": os.getenv("MAX_WORKERS", "4"),
-    "CHUNK_SIZE": os.getenv("CHUNK_SIZE", "131072"),
+    "MAX_WORKERS": os.getenv("4"),
+    "CHUNK_SIZE": os.getenv("131072"),
 }
 
 missing_vars = [var for var, value in required_env_vars.items() if not value and var not in ["RENDER_URL", "MAX_WORKERS", "CHUNK_SIZE"]]
@@ -523,8 +523,8 @@ if __name__ == "__main__":
 
     print("Starting High-Speed Wasabi Storage Bot...")
     print(f"Optimization settings:")
-    print(f"- Max workers: {required_env_vars['MAX_WORKERS']}")
-    print(f"- Chunk size: {humanbytes(CHUNK_SIZE)}")
+    print(f"- Max workers: {required_env_vars['4']}")
+    print(f"- Chunk size: {humanbytes(131072)}")
     print(f"- Max concurrent transmissions: 5")
     
     app.run()
