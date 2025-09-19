@@ -101,7 +101,7 @@ def generate_player_url(filename,presigned_url):
     return None
 
 # -----------------------------
-# Progress Callbacks (Synchronous)
+# Thread-Safe Progress Callbacks
 # -----------------------------
 def download_progress(current, total, message, start_time, prefix="Downloading"):
     now = time.time()
@@ -116,7 +116,12 @@ def download_progress(current, total, message, start_time, prefix="Downloading")
     filled = int(bar_len*percentage/100)
     bar = "█"*filled+"—"*(bar_len-filled)
     text=f"{prefix}...\n[{bar}] {percentage:.2f}%\n📦 {humanbytes(current)} / {humanbytes(total)}\n{icon} {speed_mb:.2f} MB/s\n⏳ ETA: {eta}"
-    asyncio.get_event_loop().create_task(message.edit_text(text))
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(message.edit_text(text))
+    except RuntimeError:
+        asyncio.run_coroutine_threadsafe(message.edit_text(text), asyncio.new_event_loop())
 
 def upload_progress(chunk):
     upload_progress.current += chunk
@@ -132,7 +137,11 @@ def upload_progress(chunk):
     filled=int(bar_len*percentage/100)
     bar="█"*filled+"—"*(bar_len-filled)
     text=f"☁️ Uploading...\n[{bar}] {percentage:.2f}%\n📦 {humanbytes(upload_progress.current)} / {humanbytes(upload_progress.total)}\n{icon} {speed_mb:.2f} MB/s\n⏳ ETA: {eta}"
-    asyncio.get_event_loop().create_task(upload_progress.message.edit_text(text))
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(upload_progress.message.edit_text(text))
+    except RuntimeError:
+        asyncio.run_coroutine_threadsafe(upload_progress.message.edit_text(text), asyncio.new_event_loop())
 
 # -----------------------------
 # Telegram Bot Handlers
@@ -166,7 +175,6 @@ async def upload_file_handler(client,message:Message):
         upload_progress.current=0
         upload_progress.total=size
         upload_progress.start_time=time.time()
-        upload_progress.loop=asyncio.get_event_loop()
         upload_progress.message=status
         config=TransferConfig(
             multipart_threshold=64*1024*1024,
@@ -206,4 +214,4 @@ if __name__=="__main__":
     Thread(target=run_flask,daemon=True).start()
     print("🚀 Starting Wasabi Storage Bot at INSTANT SPEED...")
     app.run()
-    
+                                         
