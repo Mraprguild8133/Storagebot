@@ -2,8 +2,10 @@ import os
 import re
 import base64
 import asyncio
+import time
 import traceback
 from pathlib import Path
+from datetime import datetime, timedelta
 
 import boto3
 from dotenv import load_dotenv
@@ -90,6 +92,14 @@ def humanbytes(size):
         size /= power
     return f"{size:.2f} TB"
 
+def humantime(seconds):
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    elif seconds < 3600:
+        return f"{seconds // 60:.0f}m {seconds % 60:.0f}s"
+    else:
+        return f"{seconds // 3600:.0f}h {(seconds % 3600) // 60:.0f}m"
+
 def get_user_folder(user_id):
     return f"user_{user_id}"
 
@@ -112,6 +122,63 @@ def generate_player_url(filename, presigned_url):
         encoded_url = base64.urlsafe_b64encode(presigned_url.encode()).decode().rstrip('=')
         return f"{required_env_vars['RENDER_URL']}/player/{file_type}/{encoded_url}"
     return None
+
+# -----------------------------
+# Progress Tracker Class
+# -----------------------------
+class ProgressTracker:
+    def __init__(self, total_size, message, status_message):
+        self.total_size = total_size
+        self.message = message
+        self.status_message = status_message
+        self.start_time = time.time()
+        self.last_update_time = self.start_time
+        self.downloaded = 0
+        self.last_downloaded = 0
+        self.speed = 0
+        self.eta = "Calculating..."
+        
+    async def update(self, downloaded):
+        current_time = time.time()
+        self.downloaded = downloaded
+        
+        # Calculate speed (bytes per second)
+        time_diff = current_time - self.last_update_time
+        if time_diff >= 1.0:  # Update at most once per second
+            downloaded_diff = downloaded - self.last_downloaded
+            self.speed = downloaded_diff / time_diff
+            
+            # Calculate ETA
+            if self.speed > 0:
+                remaining = self.total_size - downloaded
+                self.eta = humantime(remaining / self.speed)
+            else:
+                self.eta = "Unknown"
+            
+            # Update status message
+            progress_percent = (downloaded / self.total_size) * 100
+            progress_bar = self.get_progress_bar(progress_percent)
+            
+            status_text = (
+                f"📥 Downloading...\n\n"
+                f"File: {self.message.document.file_name if self.message.document else 'Unknown'}\n"
+                f"Progress: {progress_bar} {progress_percent:.1f}%\n"
+                f"Downloaded: {humanbytes(downloaded)} / {humanbytes(self.total_size)}\n"
+                f"Speed: {humanbytes(self.speed)}/s\n"
+                f"ETA: {self.eta}"
+            )
+            
+            try:
+                await self.status_message.edit_text(status_text)
+            except:
+                pass  # Avoid spamming if message edits happen too quickly
+            
+            self.last_update_time = current_time
+            self.last_downloaded = downloaded
+    
+    def get_progress_bar(self, percent, length=10):
+        filled = int(length * percent / 100)
+        return "█" * filled + "░" * (length - filled)
 
 # -----------------------------
 # Telegram Bot Handlers
@@ -142,13 +209,27 @@ async def upload_file_handler(client, message: Message):
         await message.reply_text(f"File too large. Maximum size is {humanbytes(MAX_FILE_SIZE)}")
         return
 
-    status_message = await message.reply_text("Downloading file...")
+    status_message = await message.reply_text("📥 Downloading file...\n\nInitializing...")
 
     try:
-        file_path = await message.download()
+        # Create progress tracker
+        progress_tracker = ProgressTracker(size, message, status_message)
+        
+        # Define progress callback
+        def progress_callback(current, total):
+            asyncio.run_coroutine_threadsafe(
+                progress_tracker.update(current),
+                asyncio.get_event_loop()
+            )
+        
+        # Download file with progress tracking
+        file_path = await message.download(progress=progress_callback)
         file_name = sanitize_filename(os.path.basename(file_path))
         user_file_name = f"{get_user_folder(message.from_user.id)}/{file_name}"
 
+        await status_message.edit_text("📤 Uploading to Wasabi...")
+        
+        # Upload to Wasabi
         await asyncio.to_thread(
             s3_client.upload_file,
             file_path,
@@ -179,7 +260,7 @@ async def upload_file_handler(client, message: Message):
 
     except Exception as e:
         print("Error:", traceback.format_exc())
-        await status_message.edit_text(f"Error: {str(e)}")
+        await status_message.edit_text(f"❌ Error: {str(e)}")
     finally:
         try:
             if 'file_path' in locals():
