@@ -3,22 +3,23 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MX Style Media Player</title>
+  <title>Cloud Player</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <style>
     * {
+      box-sizing: border-box;
       margin: 0;
       padding: 0;
-      box-sizing: border-box;
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     }
     
     body {
-      background: linear-gradient(135deg, #121212, #000000);
+      background: linear-gradient(135deg, #1a2a6c, #2a3a7c, #3a4a8c);
       color: #fff;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
       display: flex;
-      justify-content: center;
+      flex-direction: column;
       align-items: center;
+      justify-content: center;
       min-height: 100vh;
       padding: 20px;
     }
@@ -26,274 +27,172 @@
     .container {
       width: 100%;
       max-width: 900px;
-      background: #1a1a1a;
-      border-radius: 12px;
+      background: rgba(25, 25, 35, 0.8);
+      border-radius: 15px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
       overflow: hidden;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(10px);
     }
     
-    .header {
-      padding: 15px 20px;
-      background: #000;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      border-bottom: 1px solid #2a2a2a;
+    header {
+      padding: 20px;
+      text-align: center;
+      background: rgba(15, 15, 25, 0.7);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
     }
     
-    .logo {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    
-    .logo-text {
-      font-size: 1.8rem;
-      font-weight: bold;
-      background: linear-gradient(to right, #ff5f5f, #ff8f45);
+    h1 {
+      font-size: 2.2rem;
+      margin-bottom: 5px;
+      background: linear-gradient(to right, #4facfe, #00f2fe);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
+      text-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
     }
     
-    .logo-icon {
-      color: #ff5f5f;
-      font-size: 1.5rem;
+    .subtitle {
+      color: #a0a0c0;
+      font-size: 1rem;
+      margin-bottom: 10px;
     }
     
     .player-container {
-      position: relative;
-      width: 100%;
-      background: #000;
+      padding: 25px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
     }
     
-    #video-player {
+    .media-display {
+      width: 100%;
+      max-width: 100%;
+      margin-bottom: 25px;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 5px 20px rgba(0, 0, 0, 0.4);
+      background: #000;
+      position: relative;
+    }
+    
+    video, audio, img {
       width: 100%;
       display: block;
       max-height: 70vh;
     }
     
-    .controls-overlay {
-      position: absolute;
-      bottom: 0;
-      left: 0;
-      right: 0;
-      background: linear-gradient(to top, rgba(0, 0, 0, 0.8), transparent);
-      padding: 20px;
-      opacity: 0;
-      transition: opacity 0.3s ease;
-    }
-    
-    .player-container:hover .controls-overlay {
-      opacity: 1;
-    }
-    
-    .progress-container {
+    .custom-audio-player {
       width: 100%;
-      height: 5px;
-      background: rgba(255, 255, 255, 0.2);
-      border-radius: 3px;
-      margin-bottom: 15px;
-      cursor: pointer;
+      padding: 15px;
+      background: #1a1a2a;
+      border-radius: 10px;
     }
     
-    .progress {
-      height: 100%;
-      background: linear-gradient(to right, #ff5f5f, #ff8f45);
-      border-radius: 3px;
-      width: 0%;
-      position: relative;
-    }
-    
-    .progress-thumb {
-      width: 15px;
-      height: 15px;
-      border-radius: 50%;
-      background: #ff5f5f;
-      position: absolute;
-      right: -7px;
-      top: -5px;
-      box-shadow: 0 0 5px rgba(0, 0, 0, 0.5);
-    }
-    
-    .time-display {
-      display: flex;
-      justify-content: space-between;
-      margin-bottom: 15px;
+    .media-info {
+      padding: 12px 15px;
+      background: rgba(30, 30, 45, 0.7);
+      border-radius: 8px;
+      margin-bottom: 20px;
+      width: 100%;
       font-size: 0.9rem;
-      color: #ddd;
-    }
-    
-    .control-buttons {
       display: flex;
       justify-content: space-between;
       align-items: center;
     }
     
-    .left-controls, .right-controls {
+    .media-type {
+      background: #4facfe;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: bold;
+    }
+    
+    .controls {
       display: flex;
-      align-items: center;
-      gap: 15px;
-    }
-    
-    .control-btn {
-      background: none;
-      border: none;
-      color: #fff;
-      font-size: 1.2rem;
-      cursor: pointer;
-      padding: 8px;
-      border-radius: 50%;
-      transition: all 0.2s ease;
-    }
-    
-    .control-btn:hover {
-      background: rgba(255, 255, 255, 0.1);
-    }
-    
-    .play-pause {
-      background: #ff5f5f;
-      width: 50px;
-      height: 50px;
-      display: flex;
+      gap: 12px;
+      margin-top: 15px;
+      flex-wrap: wrap;
       justify-content: center;
-      align-items: center;
-      border-radius: 50%;
-      box-shadow: 0 0 10px rgba(255, 95, 95, 0.5);
     }
     
-    .play-pause:hover {
-      background: #ff4545;
-      transform: scale(1.05);
-    }
-    
-    .skip-buttons {
+    .btn {
       display: flex;
-      gap: 5px;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 20px;
+      background: linear-gradient(to right, #4facfe, #00f2fe);
+      color: white;
+      text-decoration: none;
+      border-radius: 50px;
+      font-weight: 600;
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
     }
     
-    .skip-btn {
-      background: rgba(255, 255, 255, 0.1);
-      border: none;
-      color: #fff;
-      padding: 8px 12px;
-      border-radius: 20px;
-      cursor: pointer;
-      font-size: 0.9rem;
-      transition: all 0.2s ease;
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 15px rgba(0, 0, 0, 0.4);
+      background: linear-gradient(to right, #3a9cec, #00ddee);
     }
     
-    .skip-btn:hover {
-      background: rgba(255, 255, 255, 0.2);
+    .btn i {
+      font-size: 1rem;
     }
     
-    .settings-panel {
-      padding: 20px;
-      background: #1e1e1e;
-      border-top: 1px solid #2a2a2a;
-    }
-    
-    .settings-title {
-      font-size: 1.1rem;
-      margin-bottom: 15px;
-      color: #ff5f5f;
-    }
-    
-    .settings-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 20px;
-    }
-    
-    .setting-group {
-      margin-bottom: 15px;
-    }
-    
-    .setting-label {
-      display: block;
-      margin-bottom: 8px;
-      color: #ddd;
-      font-size: 0.9rem;
-    }
-    
-    .select-box {
-      width: 100%;
-      padding: 10px;
-      background: #2a2a2a;
-      border: 1px solid #3a3a3a;
-      border-radius: 5px;
-      color: #fff;
-      font-size: 0.9rem;
-    }
-    
-    .select-box:focus {
-      outline: none;
-      border-color: #ff5f5f;
-    }
-    
-    .footer {
-      padding: 15px 20px;
-      background: #000;
+    .loading {
+      padding: 40px;
       text-align: center;
-      color: #666;
-      font-size: 0.9rem;
-      border-top: 1px solid #2a2a2a;
+      color: #a0a0c0;
     }
     
-    .subtitle-display {
-      position: absolute;
-      bottom: 100px;
-      left: 0;
-      right: 0;
-      text-align: center;
-      color: #fff;
-      text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.8);
-      font-size: 1.2rem;
-      padding: 10px;
+    .loading i {
+      font-size: 2rem;
+      margin-bottom: 15px;
+      color: #4facfe;
     }
     
-    .fullscreen {
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      z-index: 1000;
-      border-radius: 0;
-    }
-    
-    .fullscreen .controls-overlay {
+    .error {
       padding: 30px;
+      text-align: center;
+      background: rgba(200, 60, 60, 0.2);
+      border-radius: 10px;
+      margin: 20px 0;
+      border: 1px solid rgba(255, 100, 100, 0.3);
     }
     
-    .notification {
-      position: absolute;
-      top: 20px;
-      left: 50%;
-      transform: translateX(-50%);
-      background: rgba(0, 0, 0, 0.7);
-      padding: 10px 20px;
-      border-radius: 20px;
+    .error i {
+      font-size: 2.5rem;
+      margin-bottom: 15px;
+      color: #ff6b6b;
+    }
+    
+    footer {
+      text-align: center;
+      padding: 20px;
+      color: #a0a0c0;
       font-size: 0.9rem;
-      opacity: 0;
-      transition: opacity 0.3s ease;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
     }
     
     @media (max-width: 600px) {
-      .settings-grid {
-        grid-template-columns: 1fr;
+      .container {
+        border-radius: 10px;
       }
       
-      .control-buttons {
+      h1 {
+        font-size: 1.8rem;
+      }
+      
+      .player-container {
+        padding: 15px;
+      }
+      
+      .controls {
         flex-direction: column;
-        gap: 15px;
-      }
-      
-      .left-controls, .right-controls {
         width: 100%;
-        justify-content: center;
       }
       
-      .skip-buttons {
+      .btn {
         width: 100%;
         justify-content: center;
       }
@@ -302,345 +201,128 @@
 </head>
 <body>
   <div class="container">
-    <div class="header">
-      <div class="logo">
-        <i class="fas fa-play-circle logo-icon"></i>
-        <div class="logo-text">MX Player</div>
+    <header>
+      <h1>Cloud Player</h1>
+      <div class="subtitle">Stream your media files seamlessly</div>
+    </header>
+    
+    <div class="player-container">
+      <div class="media-info">
+        <div class="media-url">Content from secure source</div>
+        <div class="media-type">Loading...</div>
       </div>
-      <div class="header-info">
-        <span>HD • 16:9</span>
+      
+      <div id="player" class="media-display">
+        <div class="loading">
+          <i class="fas fa-spinner fa-spin"></i>
+          <p>Loading your media content...</p>
+        </div>
+      </div>
+      
+      <div class="controls">
+        <a id="openBtn" target="_blank" class="btn">
+          <i class="fas fa-external-link-alt"></i>Open Original
+        </a>
+        <a id="downloadBtn" download class="btn">
+          <i class="fas fa-download"></i>Download
+        </a>
+        <a id="newContentBtn" class="btn">
+          <i class="fas fa-plus"></i>New Content
+        </a>
       </div>
     </div>
     
-    <div class="player-container" id="player-container">
-      <video id="video-player">
-        <!-- Sample video source (would be dynamic in a real app) -->
-        <source src="https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/720/Big_Buck_Bunny_720_10s_1MB.mp4" type="video/mp4">
-        Your browser does not support the video tag.
-      </video>
-      
-      <div class="subtitle-display" id="subtitle-display">
-        This is a sample subtitle text
-      </div>
-      
-      <div class="controls-overlay">
-        <div class="progress-container" id="progress-container">
-          <div class="progress" id="progress">
-            <div class="progress-thumb"></div>
-          </div>
-        </div>
-        
-        <div class="time-display">
-          <span id="current-time">0:00</span>
-          <span id="total-time">0:00</span>
-        </div>
-        
-        <div class="control-buttons">
-          <div class="left-controls">
-            <button class="control-btn" id="subtitle-btn" title="Subtitles">
-              <i class="fas fa-closed-captioning"></i>
-            </button>
-            <button class="control-btn" id="audio-btn" title="Audio Track">
-              <i class="fas fa-music"></i>
-            </button>
-          </div>
-          
-          <div class="skip-buttons">
-            <button class="skip-btn" id="back-50s" title="Back 50 seconds">
-              <i class="fas fa-backward-fast"></i> 50s
-            </button>
-            <button class="skip-btn" id="back-10s" title="Back 10 seconds">
-              <i class="fas fa-backward-step"></i> 10s
-            </button>
-          </div>
-          
-          <button class="control-btn play-pause" id="play-pause-btn" title="Play/Pause">
-            <i class="fas fa-play" id="play-icon"></i>
-          </button>
-          
-          <div class="skip-buttons">
-            <button class="skip-btn" id="forward-10s" title="Forward 10 seconds">
-              10s <i class="fas fa-forward-step"></i>
-            </button>
-            <button class="skip-btn" id="forward-50s" title="Forward 50 seconds">
-              50s <i class="fas fa-forward-fast"></i>
-            </button>
-          </div>
-          
-          <div class="right-controls">
-            <button class="control-btn" id="settings-btn" title="Settings">
-              <i class="fas fa-cog"></i>
-            </button>
-            <button class="control-btn" id="fullscreen-btn" title="Fullscreen">
-              <i class="fas fa-expand"></i>
-            </button>
-          </div>
-        </div>
-      </div>
-      
-      <div class="notification" id="notification"></div>
-    </div>
-    
-    <div class="settings-panel" id="settings-panel">
-      <h3 class="settings-title">Playback Settings</h3>
-      
-      <div class="settings-grid">
-        <div class="setting-group">
-          <label class="setting-label">Subtitles</label>
-          <select class="select-box" id="subtitle-select">
-            <option value="none">None</option>
-            <option value="english">English</option>
-            <option value="spanish">Spanish</option>
-            <option value="french">French</option>
-            <option value="german">German</option>
-          </select>
-        </div>
-        
-        <div class="setting-group">
-          <label class="setting-label">Audio Track</label>
-          <select class="select-box" id="audio-track-select">
-            <option value="main">Main Audio</option>
-            <option value="commentary">Director's Commentary</option>
-            <option value="descriptive">Descriptive Audio</option>
-          </select>
-        </div>
-        
-        <div class="setting-group">
-          <label class="setting-label">Playback Speed</label>
-          <select class="select-box" id="playback-speed">
-            <option value="0.5">0.5x</option>
-            <option value="0.75">0.75x</option>
-            <option value="1" selected>Normal</option>
-            <option value="1.25">1.25x</option>
-            <option value="1.5">1.5x</option>
-            <option value="2">2x</option>
-          </select>
-        </div>
-        
-        <div class="setting-group">
-          <label class="setting-label">Quality</label>
-          <select class="select-box" id="quality-select">
-            <option value="auto">Auto</option>
-            <option value="1080">1080p</option>
-            <option value="720">720p</option>
-            <option value="480">480p</option>
-            <option value="360">360p</option>
-          </select>
-        </div>
-      </div>
-    </div>
-    
-    <div class="footer">
-      MX Style Player &copy; 2023 | Designed for demonstration purposes
-    </div>
+    <footer>
+      <p>Cloud Player &copy; 2023 | Secure Media Streaming</p>
+    </footer>
   </div>
 
   <script>
-    document.addEventListener('DOMContentLoaded', function() {
-      // Get elements
-      const videoPlayer = document.getElementById('video-player');
-      const playPauseBtn = document.getElementById('play-pause-btn');
-      const playIcon = document.getElementById('play-icon');
-      const progress = document.getElementById('progress');
-      const progressContainer = document.getElementById('progress-container');
-      const currentTimeEl = document.getElementById('current-time');
-      const totalTimeEl = document.getElementById('total-time');
-      const fullscreenBtn = document.getElementById('fullscreen-btn');
-      const playerContainer = document.getElementById('player-container');
-      const subtitleDisplay = document.getElementById('subtitle-display');
-      const subtitleSelect = document.getElementById('subtitle-select');
-      const notification = document.getElementById('notification');
+    function decodeBase64Url(encoded) {
+      try {
+        let pad = encoded.length % 4;
+        if (pad) encoded += "=".repeat(4 - pad);
+        return atob(encoded.replace(/-/g, '+').replace(/_/g, '/'));
+      } catch { return null; }
+    }
+    
+    function displayMedia() {
+      const parts = window.location.pathname.split("/");
+      const type = parts[2];
+      const encoded = parts[3];
+      const url = decodeBase64Url(encoded);
       
-      // Skip buttons
-      const back10sBtn = document.getElementById('back-10s');
-      const back50sBtn = document.getElementById('back-50s');
-      const forward10sBtn = document.getElementById('forward-10s');
-      const forward50sBtn = document.getElementById('forward-50s');
+      const playerEl = document.getElementById("player");
+      const mediaTypeEl = document.querySelector(".media-type");
+      const openBtn = document.getElementById("openBtn");
+      const downloadBtn = document.getElementById("downloadBtn");
       
-      // Playback state
-      let isPlaying = false;
-      
-      // Initialize player
-      function initPlayer() {
-        // Set up event listeners
-        videoPlayer.addEventListener('loadedmetadata', function() {
-          totalTimeEl.textContent = formatTime(videoPlayer.duration);
-        });
-        
-        videoPlayer.addEventListener('timeupdate', updateProgress);
-        
-        videoPlayer.addEventListener('play', function() {
-          isPlaying = true;
-          playIcon.classList.remove('fa-play');
-          playIcon.classList.add('fa-pause');
-        });
-        
-        videoPlayer.addEventListener('pause', function() {
-          isPlaying = false;
-          playIcon.classList.remove('fa-pause');
-          playIcon.classList.add('fa-play');
-        });
-        
-        playPauseBtn.addEventListener('click', togglePlay);
-        
-        progressContainer.addEventListener('click', setProgress);
-        
-        fullscreenBtn.addEventListener('click', toggleFullscreen);
-        
-        // Skip buttons
-        back10sBtn.addEventListener('click', () => skipTime(-10));
-        back50sBtn.addEventListener('click', () => skipTime(-50));
-        forward10sBtn.addEventListener('click', () => skipTime(10));
-        forward50sBtn.addEventListener('click', () => skipTime(50));
-        
-        // Long press for skip buttons
-        setupLongPress(back10sBtn, () => skipTime(-10));
-        setupLongPress(back50sBtn, () => skipTime(-50));
-        setupLongPress(forward10sBtn, () => skipTime(10));
-        setupLongPress(forward50sBtn, () => skipTime(50));
-        
-        // Settings changes
-        subtitleSelect.addEventListener('change', updateSubtitle);
-        
-        // Simulate subtitles for demo
-        simulateSubtitles();
+      if (!url) {
+        playerEl.innerHTML = `
+          <div class="error">
+            <i class="fas fa-exclamation-circle"></i>
+            <h2>Invalid or Expired Link</h2>
+            <p>The media link is invalid or may have expired.</p>
+          </div>
+        `;
+        mediaTypeEl.textContent = "Invalid";
+        openBtn.style.display = "none";
+        downloadBtn.style.display = "none";
+        return;
       }
       
-      // Toggle play/pause
-      function togglePlay() {
-        if (videoPlayer.paused) {
-          videoPlayer.play();
-        } else {
-          videoPlayer.pause();
-        }
+      // Set media type badge
+      mediaTypeEl.textContent = type.charAt(0).toUpperCase() + type.slice(1);
+      
+      // Set button URLs
+      openBtn.href = url;
+      downloadBtn.href = url;
+      
+      // Display the appropriate media player
+      let html = "";
+      if (type === "video") {
+        html = `
+          <video controls autoplay>
+            <source src="${url}" type="video/mp4">
+            Your browser does not support the video tag.
+          </video>
+        `;
+      } else if (type === "audio") {
+        html = `
+          <div class="custom-audio-player">
+            <audio controls autoplay>
+              <source src="${url}" type="audio/mpeg">
+              Your browser does not support the audio element.
+            </audio>
+          </div>
+        `;
+      } else if (type === "image") {
+        html = `<img src="${url}" alt="Cloud Image">`;
+      } else {
+        html = `
+          <div class="error">
+            <i class="fas fa-times-circle"></i>
+            <h2>Unsupported Media Type</h2>
+            <p>Type: ${type} is not supported.</p>
+          </div>
+        `;
       }
       
-      // Update progress bar
-      function updateProgress() {
-        const percent = (videoPlayer.currentTime / videoPlayer.duration) * 100;
-        progress.style.width = `${percent}%`;
-        currentTimeEl.textContent = formatTime(videoPlayer.currentTime);
-      }
-      
-      // Set progress on click
-      function setProgress(e) {
-        const width = this.clientWidth;
-        const clickX = e.offsetX;
-        const duration = videoPlayer.duration;
-        videoPlayer.currentTime = (clickX / width) * duration;
-      }
-      
-      // Skip time
-      function skipTime(seconds) {
-        videoPlayer.currentTime += seconds;
-        showNotification(`${seconds > 0 ? '+' : ''}${seconds} seconds`);
-      }
-      
-      // Setup long press
-      function setupLongPress(button, action) {
-        let pressTimer;
-        
-        button.addEventListener('mousedown', function() {
-          pressTimer = window.setTimeout(function() {
-            action();
-          }, 500); // 500ms for long press
-        });
-        
-        button.addEventListener('mouseup', function() {
-          clearTimeout(pressTimer);
-        });
-        
-        button.addEventListener('mouseleave', function() {
-          clearTimeout(pressTimer);
-        });
-        
-        // Touch events for mobile
-        button.addEventListener('touchstart', function() {
-          pressTimer = window.setTimeout(function() {
-            action();
-          }, 500);
-        });
-        
-        button.addEventListener('touchend', function() {
-          clearTimeout(pressTimer);
-        });
-      }
-      
-      // Toggle fullscreen
-      function toggleFullscreen() {
-        if (!document.fullscreenElement) {
-          if (playerContainer.requestFullscreen) {
-            playerContainer.requestFullscreen();
-          } else if (playerContainer.webkitRequestFullscreen) {
-            playerContainer.webkitRequestFullscreen();
-          } else if (playerContainer.msRequestFullscreen) {
-            playerContainer.msRequestFullscreen();
-          }
-          playerContainer.classList.add('fullscreen');
-          fullscreenBtn.innerHTML = '<i class="fas fa-compress"></i>';
-        } else {
-          if (document.exitFullscreen) {
-            document.exitFullscreen();
-          } else if (document.webkitExitFullscreen) {
-            document.webkitExitFullscreen();
-          } else if (document.msExitFullscreen) {
-            document.msExitFullscreen();
-          }
-          playerContainer.classList.remove('fullscreen');
-          fullscreenBtn.innerHTML = '<i class="fas fa-expand"></i>';
-        }
-      }
-      
-      // Update subtitle
-      function updateSubtitle() {
-        const subtitle = subtitleSelect.value;
-        if (subtitle === 'none') {
-          subtitleDisplay.style.display = 'none';
-        } else {
-          subtitleDisplay.style.display = 'block';
-          showNotification(`Subtitles: ${subtitle.charAt(0).toUpperCase() + subtitle.slice(1)}`);
-        }
-      }
-      
-      // Simulate subtitles for demo
-      function simulateSubtitles() {
-        let subtitleIndex = 0;
-        const subtitles = [
-          "This is a sample subtitle text",
-          "MX Style Player with advanced features",
-          "Support for multiple audio tracks and subtitles",
-          "Smooth playback with skip controls",
-          "Enjoy your media experience"
-        ];
-        
-        setInterval(() => {
-          if (isPlaying && subtitleSelect.value !== 'none') {
-            subtitleDisplay.textContent = subtitles[subtitleIndex];
-            subtitleIndex = (subtitleIndex + 1) % subtitles.length;
-          }
-        }, 4000);
-      }
-      
-      // Show notification
-      function showNotification(message) {
-        notification.textContent = message;
-        notification.style.opacity = '1';
-        
-        setTimeout(() => {
-          notification.style.opacity = '0';
-        }, 2000);
-      }
-      
-      // Format time
-      function formatTime(seconds) {
-        let mins = Math.floor(seconds / 60);
-        let secs = Math.floor(seconds % 60);
-        return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
-      }
-      
-      // Initialize the player
-      initPlayer();
+      // Add a small delay to simulate loading (for demo purposes)
+      setTimeout(() => {
+        playerEl.innerHTML = html;
+      }, 1000);
+    }
+    
+    // Initialize the player when page loads
+    document.addEventListener("DOMContentLoaded", displayMedia);
+    
+    // Add event listener for the "New Content" button
+    document.getElementById("newContentBtn").addEventListener("click", function() {
+      // For demo purposes, we'll just reload with a sample URL
+      // In a real app, this would open a file selector or similar
+      alert("In a complete implementation, this would allow you to upload or select new content.");
     });
   </script>
 </body>
-  </html>
+</html>
