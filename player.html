@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Media Player</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        .player-container {
+            max-width: 800px;
+            width: 100%;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 20px;
+            margin-top: 20px;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        video, audio {
+            width: 100%;
+            margin-bottom: 20px;
+        }
+        .download-btn {
+            display: inline-block;
+            padding: 10px 20px;
+            background: #007bff;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1 id="title">Media Player</h1>
+    <div class="player-container">
+        <video id="videoPlayer" controls style="display: none;">
+            Your browser does not support the video tag.
+        </video>
+        <audio id="audioPlayer" controls style="display: none;">
+            Your browser does not support the audio tag.
+        </audio>
+        <div id="unsupported" style="display: none;">
+            <p>This file type is not supported for playback.</p>
+        </div>
+        <a id="downloadLink" href="#" class="download-btn" download>Download File</a>
+    </div>
+
+    <script>
+        // Get URL parameters
+        const urlParams = new URLSearchParams(window.location.search);
+        const mediaUrl = urlParams.get('url');
+        const mediaType = urlParams.get('type');
+        const title = decodeURIComponent(urlParams.get('title') || 'Media File');
+        
+        // Set title
+        document.getElementById('title').textContent = title;
+        
+        // Set up players based on media type
+        if (mediaType === 'video') {
+            const videoPlayer = document.getElementById('videoPlayer');
+            videoPlayer.style.display = 'block';
+            videoPlayer.src = mediaUrl;
+        } else if (mediaType === 'audio') {
+            const audioPlayer = document.getElementById('audioPlayer');
+            audioPlayer.style.display = 'block';
+            audioPlayer.src = mediaUrl;
+        } else {
+            document.getElementById('unsupported').style.display = 'block';
+        }
+        
+        // Set download link
+        document.getElementById('downloadLink').href = mediaUrl;
+        document.getElementById('downloadLink').download = title;
+    </script>
+</body>
+</html>
