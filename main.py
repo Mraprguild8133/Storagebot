@@ -5,6 +5,7 @@ import os
 import time
 import logging
 import asyncio
+import aiosqlite
 from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.types import (
@@ -36,11 +37,107 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger(__name__)
 
-# --- In-memory storage (replace with a database for production) ---
-# This is a simple dictionary to store file metadata.
-# A proper database like SQLite, PostgreSQL, or a NoSQL DB would be better.
-file_db = {}
-user_db = {} # Stores user-specific settings like channel_id
+# --- Database Setup ---
+DB_NAME = "file_bot.db"
+
+async def init_db():
+    """Initialize the SQLite database."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS files (
+                file_id TEXT PRIMARY KEY,
+                name TEXT,
+                size INTEGER,
+                mime_type TEXT,
+                tg_file_id TEXT,
+                upload_date TIMESTAMP,
+                user_id INTEGER
+            )
+        ''')
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                channel_id INTEGER,
+                settings TEXT
+            )
+        ''')
+        await db.commit()
+
+async def store_file_metadata(file_id, name, size, mime_type, tg_file_id, user_id):
+    """Store file metadata in the database."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (file_id, name, size, mime_type, tg_file_id, time.time(), user_id)
+        )
+        await db.commit()
+
+async def get_file_metadata(file_id):
+    """Retrieve file metadata from the database."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT * FROM files WHERE file_id = ?", (file_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                return {
+                    "name": row[1],
+                    "size": row[2],
+                    "mime_type": row[3],
+                    "tg_file_id": row[4],
+                    "upload_date": row[5],
+                    "user_id": row[6]
+                }
+            return None
+
+async def get_all_files():
+    """Retrieve all files from the database."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT * FROM files") as cursor:
+            rows = await cursor.fetchall()
+            files = {}
+            for row in rows:
+                files[row[0]] = {
+                    "name": row[1],
+                    "size": row[2],
+                    "mime_type": row[3],
+                    "tg_file_id": row[4],
+                    "upload_date": row[5],
+                    "user_id": row[6]
+                }
+            return files
+
+async def store_user_setting(user_id, key, value):
+    """Store user settings in the database."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        # First check if user exists
+        async with db.execute("SELECT settings FROM users WHERE user_id = ?", (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            
+        if row:
+            # Update existing user
+            settings = json.loads(row[0]) if row[0] else {}
+            settings[key] = value
+            await db.execute(
+                "UPDATE users SET settings = ? WHERE user_id = ?",
+                (json.dumps(settings), user_id)
+            )
+        else:
+            # Insert new user
+            settings = {key: value}
+            await db.execute(
+                "INSERT INTO users (user_id, settings) VALUES (?, ?)",
+                (user_id, json.dumps(settings))
+            )
+        await db.commit()
+
+async def get_user_setting(user_id, key):
+    """Retrieve user setting from the database."""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute("SELECT settings FROM users WHERE user_id = ?", (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row and row[0]:
+                settings = json.loads(row[0])
+                return settings.get(key)
+            return None
 
 # --- Pyrogram Client Initialization ---
 app = Client("file_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -62,7 +159,6 @@ except Exception as e:
     LOGGER.error(f"An unexpected error occurred during Wasabi connection: {e}")
     s3_client = None
 
-
 # --- Helper Functions ---
 def human_readable_size(size, decimal_places=2):
     """Converts size in bytes to a human-readable format."""
@@ -71,7 +167,6 @@ def human_readable_size(size, decimal_places=2):
             break
         size /= 1024.0
     return f"{size:.{decimal_places}f} {unit}"
-
 
 progress_update_tracker = {}
 
@@ -102,6 +197,41 @@ async def progress_callback(current, total, message, action, start_time):
         # Avoid crashing on message edit errors
         pass
 
+class S3Progress:
+    """A class to track S3 upload progress and report it via a callback."""
+    def __init__(self, message, total_size, action, start_time):
+        self._message = message
+        self._total_size = total_size
+        self._action = action
+        self._start_time = start_time
+        self._seen_so_far = 0
+        self._lock = asyncio.Lock()
+        # Create a new event loop for the background thread
+        self._loop = asyncio.new_event_loop()
+
+    def __call__(self, bytes_amount):
+        self._seen_so_far += bytes_amount
+        
+        # Run the progress update in the background thread's event loop
+        if not self._loop.is_running():
+            asyncio.set_event_loop(self._loop)
+            
+        # Use thread-safe execution
+        asyncio.run_coroutine_threadsafe(
+            self._update_progress(), 
+            self._loop
+        )
+
+    async def _update_progress(self):
+        """Update progress in a thread-safe manner."""
+        async with self._lock:
+            await progress_callback(
+                self._seen_so_far, 
+                self._total_size, 
+                self._message, 
+                self._action, 
+                self._start_time
+            )
 
 # --- Bot Command Handlers ---
 @app.on_message(filters.command("start"))
@@ -120,7 +250,6 @@ async def start_command(_, message: Message):
     )
     await message.reply_text(start_text, quote=True)
 
-
 @app.on_message(filters.command("help"))
 async def help_command(_, message: Message):
     """Handles the /help command."""
@@ -137,23 +266,6 @@ async def help_command(_, message: Message):
         "`/help` - Shows this help message."
     )
     await message.reply_text(help_text, quote=True)
-
-class S3Progress:
-    """A class to track S3 upload progress and report it via a callback."""
-    def __init__(self, message, total_size, action, start_time):
-        self._message = message
-        self._total_size = total_size
-        self._action = action
-        self._start_time = start_time
-        self._seen_so_far = 0
-        self._loop = asyncio.get_event_loop()
-
-    def __call__(self, bytes_amount):
-        self._seen_so_far += bytes_amount
-        asyncio.run_coroutine_threadsafe(
-            progress_callback(self._seen_so_far, self._total_size, self._message, self._action, self._start_time),
-            self._loop
-        )
 
 @app.on_message(filters.document | filters.video | filters.audio | filters.photo | filters.command("upload"))
 async def upload_handler(client: Client, message: Message):
@@ -191,34 +303,36 @@ async def upload_handler(client: Client, message: Message):
 
     # Upload to Wasabi
     file_id = media.file_unique_id
-    file_name = getattr(media, "file_name", f"{file_id}.jpg") # Default for photos
+    file_name = getattr(media, "file_name", f"{file_id}.jpg")  # Default for photos
     
     try:
         start_time_s3 = time.time()
+        
+        # Upload to S3 with progress tracking
         s3_client.upload_file(
             file_path,
             WASABI_BUCKET,
             file_name,
             Callback=S3Progress(status_msg, media.file_size, "Uploading", start_time_s3),
         )
-        # Store file metadata
-        file_db[file_id] = {
-            "name": file_name,
-            "size": media.file_size,
-            "mime_type": media.mime_type,
-            "tg_file_id": media.file_id,
-        }
+        
+        # Store file metadata in database
+        user_id = message.from_user.id if message.from_user else 0
+        await store_file_metadata(file_id, file_name, media.file_size, media.mime_type, media.file_id, user_id)
         
         # Backup to channel if set
-        user_id = message.from_user.id
-        if user_id in user_db and "channel_id" in user_db[user_id]:
+        channel_id = await get_user_setting(user_id, "channel_id")
+        if channel_id:
             try:
-                channel_id = user_db[user_id]["channel_id"]
-                await client.send_document(channel_id, media.file_id, caption=f"**File:** `{file_name}`\n**ID:** `{file_id}`")
+                await client.send_document(
+                    channel_id, 
+                    media.file_id, 
+                    caption=f"**File:** `{file_name}`\n**ID:** `{file_id}`"
+                )
             except Exception as e:
                 await message.reply_text(f"⚠️ Could not forward file to channel. Error: {e}")
 
-
+        # Generate a presigned URL for the file
         link = s3_client.generate_presigned_url(
             "get_object",
             Params={"Bucket": WASABI_BUCKET, "Key": file_name},
@@ -247,16 +361,23 @@ async def upload_handler(client: Client, message: Message):
 @app.on_message(filters.command("list"))
 async def list_files_command(_, message: Message):
     """Lists all stored files."""
-    if not file_db:
+    files = await get_all_files()
+    
+    if not files:
         await message.reply_text("You haven't stored any files yet.")
         return
 
     response_text = "**🗂️ Stored Files:**\n\n"
-    for file_id, data in file_db.items():
+    for file_id, data in files.items():
         response_text += f"- **{data['name']}** ({human_readable_size(data['size'])})\n  ID: `{file_id}`\n"
 
-    await message.reply_text(response_text)
-
+    # Split into multiple messages if too long
+    if len(response_text) > 4096:
+        parts = [response_text[i:i+4096] for i in range(0, len(response_text), 4096)]
+        for part in parts:
+            await message.reply_text(part)
+    else:
+        await message.reply_text(response_text)
 
 @app.on_message(filters.command(["download", "stream", "web"]))
 async def get_file_command(_, message: Message):
@@ -268,11 +389,12 @@ async def get_file_command(_, message: Message):
         await message.reply_text(f"Please provide a file ID. Usage: `{command} <file_id>`")
         return
 
-    if file_id not in file_db:
+    file_data = await get_file_metadata(file_id)
+    if not file_data:
         await message.reply_text("❌ **Error:** File ID not found.")
         return
 
-    file_name = file_db[file_id]["name"]
+    file_name = file_data["name"]
     try:
         link = s3_client.generate_presigned_url(
             "get_object",
@@ -306,11 +428,10 @@ async def set_channel_command(_, message: Message):
             await message.reply_text(f"❌ **Error:** Could not access channel `{channel_id}`. Make sure the bot is an admin with posting rights. Error: {e}")
             return
             
-        user_db[user_id] = {"channel_id": channel_id}
+        await store_user_setting(user_id, "channel_id", channel_id)
         await message.reply_text(f"✅ Backup channel has been set to `{channel_id}`.")
     except (IndexError, ValueError):
         await message.reply_text("Usage: `/setchannel <channel_id>`")
-
 
 @app.on_message(filters.command("test"))
 async def test_wasabi_connection(_, message: Message):
@@ -338,7 +459,7 @@ def get_file_actions_keyboard(file_id, url):
     """Generates the inline keyboard for file actions."""
     # Note: A real web player would require a dedicated web service.
     # This is a placeholder link to a generic HTML5 video player.
-    web_player_url = f"https://vjs.zencdn.net/v/oceans.mp4" # Placeholder, ideally use a service that can take a URL param
+    web_player_url = f"https://vjs.zencdn.net/v/oceans.mp4"  # Placeholder
     
     keyboard = [
         [InlineKeyboardButton("📥 Direct Download", url=url)],
@@ -356,4 +477,6 @@ if __name__ == "__main__":
         LOGGER.error("One or more required environment variables are missing. Bot cannot start.")
     else:
         LOGGER.info("Bot is starting...")
+        # Initialize database
+        asyncio.run(init_db())
         app.run()
