@@ -69,7 +69,7 @@ def run_flask():
 # -----------------------------
 # Constants & Helpers
 # -----------------------------
-MAX_FILE_SIZE = 2000 * 1024 * 1024  # 2GB
+MAX_FILE_SIZE = 4000 * 1024 * 1024  # 4GB
 DOWNLOAD_DIR = Path("./downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
@@ -124,7 +124,7 @@ async def start_command(client, message: Message):
         "Use /download <filename> to download files\n"
         "Use /list to see your files\n"
         "Use /play <filename> to get a web player link (for media files)\n\n"
-        "⚠️ Maximum file size: 2GB"
+        "⚠️ Maximum file size: 4GB"
     )
     if required_env_vars["RENDER_URL"]:
         welcome_text += "\n\n🎥 Web player support is enabled!"
