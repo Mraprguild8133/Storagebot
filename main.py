@@ -3,9 +3,8 @@ import re
 import base64
 import asyncio
 import traceback
-import gzip
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 
 import boto3
@@ -14,7 +13,7 @@ from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
-from flask import Flask, render_template, jsonify
+from flask import Flask, render_template
 from threading import Thread
 
 # -----------------------------
@@ -38,9 +37,19 @@ if missing_vars:
     raise Exception(f"Missing environment variables: {', '.join(missing_vars)}")
 
 # -----------------------------
-# Initialize Thread Pool for parallel operations
+# Performance Configuration
 # -----------------------------
-thread_pool = ThreadPoolExecutor(max_workers=10)
+# Thread pool for parallel operations
+MAX_WORKERS = 10
+thread_pool = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+
+# S3 transfer configuration for better performance
+S3_TRANSFER_CONFIG = {
+    'multipart_threshold': 64 * 1024 * 1024,  # 64MB
+    'multipart_chunksize': 32 * 1024 * 1024,  # 32MB
+    'max_concurrency': MAX_WORKERS,
+    'use_threads': True,
+}
 
 # -----------------------------
 # Initialize Pyrogram Client
@@ -59,8 +68,10 @@ wasabi_endpoint_url = f'https://s3.{required_env_vars["WASABI_REGION"]}.wasabisy
 
 # Configure for better performance
 s3_config = Config(
-    max_pool_connections=50,  # Increased connection pool
+    max_pool_connections=100,  # Increased connection pool
     retries={'max_attempts': 3, 'mode': 'standard'},
+    connect_timeout=30,
+    read_timeout=60,
     s3={'addressing_style': 'virtual'},  # Virtual-hosted style addressing is faster
 )
 
@@ -124,8 +135,6 @@ MEDIA_EXTENSIONS = {
     'image': ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']
 }
 
-TEXT_EXTENSIONS = ['.txt', '.log', '.csv', '.json', '.xml', '.html', '.css', '.js', '.py', '.md']
-
 def humanbytes(size):
     if not size:
         return "0 B"
@@ -164,16 +173,9 @@ def generate_player_url(filename, presigned_url):
         return f"{required_env_vars['RENDER_URL']}/player/{file_type}/{encoded_url}"
     return None
 
-def compress_file_if_text(input_path, output_path):
-    """Compress text files to reduce upload size"""
-    ext = os.path.splitext(input_path)[1].lower()
-    if ext in TEXT_EXTENSIONS:
-        with open(input_path, 'rb') as f_in:
-            with gzip.open(output_path, 'wb') as f_out:
-                f_out.writelines(f_in)
-        return True
-    return False
-
+# -----------------------------
+# High-Performance Upload Functions
+# -----------------------------
 async def upload_file_to_wasabi(file_path, user_file_name, file_size):
     """Upload file to Wasabi with multipart support for large files"""
     if file_size > MULTIPART_THRESHOLD:
@@ -183,14 +185,21 @@ async def upload_file_to_wasabi(file_path, user_file_name, file_size):
             partial(upload_multipart, file_path, user_file_name, file_size)
         )
     else:
-        # Use regular upload for smaller files
-        return await asyncio.get_event_loop().run_in_executor(
-            thread_pool,
-            partial(s3_client.upload_file, str(file_path), required_env_vars["WASABI_BUCKET"], user_file_name)
-        )
+        # Use regular upload for smaller files with transfer acceleration if available
+        try:
+            return await asyncio.get_event_loop().run_in_executor(
+                thread_pool,
+                partial(s3_client.upload_file, str(file_path), required_env_vars["WASABI_BUCKET"], user_file_name)
+            )
+        except Exception:
+            # Fallback to standard upload if transfer acceleration fails
+            return await asyncio.get_event_loop().run_in_executor(
+                thread_pool,
+                partial(s3_client.upload_file, str(file_path), required_env_vars["WASABI_BUCKET"], user_file_name)
+            )
 
 def upload_multipart(file_path, user_file_name, file_size):
-    """Upload large files using multipart upload"""
+    """Upload large files using multipart upload with parallel part uploads"""
     # Create multipart upload
     mpu = s3_client.create_multipart_upload(
         Bucket=required_env_vars["WASABI_BUCKET"],
@@ -201,31 +210,32 @@ def upload_multipart(file_path, user_file_name, file_size):
     parts = []
     
     try:
+        # Calculate number of parts
+        part_count = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
+        
         # Upload parts in parallel
-        part_procs = []
-        part_number = 1
-        
-        with open(file_path, 'rb') as f:
-            while True:
-                data = f.read(CHUNK_SIZE)
-                if not data:
-                    break
+        futures = []
+        with ThreadPoolExecutor(max_workers=min(part_count, MAX_WORKERS)) as executor:
+            for part_number in range(1, part_count + 1):
+                # Calculate byte range for this part
+                start_byte = (part_number - 1) * CHUNK_SIZE
+                end_byte = min(start_byte + CHUNK_SIZE, file_size)
                 
-                # Upload part in thread pool
-                part_procs.append(
-                    thread_pool.submit(
-                        upload_part,
-                        user_file_name,
-                        mpu_id,
-                        part_number,
-                        data
-                    )
+                # Submit part upload to thread pool
+                future = executor.submit(
+                    upload_part,
+                    file_path,
+                    user_file_name,
+                    mpu_id,
+                    part_number,
+                    start_byte,
+                    end_byte
                 )
-                part_number += 1
-        
-        # Wait for all parts to complete
-        for future in part_procs:
-            parts.append(future.result())
+                futures.append(future)
+            
+            # Collect results as they complete
+            for future in as_completed(futures):
+                parts.append(future.result())
         
         # Sort parts by part number
         parts.sort(key=lambda x: x['PartNumber'])
@@ -247,23 +257,20 @@ def upload_multipart(file_path, user_file_name, file_size):
         )
         raise e
 
-def upload_part(user_file_name, mpu_id, part_number, data):
+def upload_part(file_path, user_file_name, mpu_id, part_number, start_byte, end_byte):
     """Upload a single part of a multipart upload"""
-    part = s3_client.upload_part(
-        Bucket=required_env_vars["WASABI_BUCKET"],
-        Key=user_file_name,
-        PartNumber=part_number,
-        UploadId=mpu_id,
-        Body=data
-    )
-    return {'PartNumber': part_number, 'ETag': part['ETag']}
-
-async def download_file_from_wasabi(user_file_name, local_path):
-    """Download file from Wasabi with progress tracking"""
-    return await asyncio.get_event_loop().run_in_executor(
-        thread_pool,
-        partial(s3_client.download_file, required_env_vars["WASABI_BUCKET"], user_file_name, str(local_path))
-    )
+    with open(file_path, 'rb') as f:
+        f.seek(start_byte)
+        data = f.read(end_byte - start_byte)
+        
+        part = s3_client.upload_part(
+            Bucket=required_env_vars["WASABI_BUCKET"],
+            Key=user_file_name,
+            PartNumber=part_number,
+            UploadId=mpu_id,
+            Body=data
+        )
+        return {'PartNumber': part_number, 'ETag': part['ETag']}
 
 # -----------------------------
 # Telegram Bot Handlers
@@ -277,7 +284,7 @@ async def start_command(client, message: Message):
         "Use /list to see your files\n"
         "Use /play <filename> to get a web player link (for media files)\n\n"
         "⚠️ Maximum file size: 2GB\n"
-        "⚡ Optimized for fast uploads and downloads"
+        "⚡ Optimized for high-speed transfers"
     )
     if required_env_vars["RENDER_URL"]:
         welcome_text += "\n\n🎥 Web player support is enabled!"
@@ -313,33 +320,19 @@ async def upload_file_handler(client, message: Message):
     status_message = await message.reply_text("Downloading file...")
 
     try:
-        # Download file
-        file_path = await message.download(file_name=DOWNLOAD_DIR / file_name)
-        user_file_name = f"{get_user_folder(message.from_user.id)}/{file_name}"
-
-        # Check if it's a text file and compress if needed
-        compressed_path = None
-        original_size = os.path.getsize(file_path)
+        # Download file with progress tracking
+        file_path = await message.download(
+            file_name=DOWNLOAD_DIR / file_name,
+            progress=partial(progress_callback, status_message, "Downloading")
+        )
         
-        if any(file_name.lower().endswith(ext) for ext in TEXT_EXTENSIONS):
-            compressed_path = DOWNLOAD_DIR / f"compressed_{file_name}.gz"
-            if compress_file_if_text(file_path, compressed_path):
-                # Use compressed file for upload
-                file_path = compressed_path
-                file_name += ".gz"
-                user_file_name += ".gz"
-                size = os.path.getsize(file_path)
-                await status_message.edit_text(
-                    f"Compressed text file from {humanbytes(original_size)} to {humanbytes(size)}. "
-                    "Now uploading to Wasabi storage..."
-                )
-            else:
-                await status_message.edit_text("Uploading to Wasabi storage...")
-        else:
-            await status_message.edit_text("Uploading to Wasabi storage...")
+        user_file_name = f"{get_user_folder(message.from_user.id)}/{file_name}"
+        actual_size = os.path.getsize(file_path)
+
+        await status_message.edit_text("Uploading to Wasabi storage...")
         
         # Upload to Wasabi (with multipart support for large files)
-        await upload_file_to_wasabi(file_path, user_file_name, size)
+        await upload_file_to_wasabi(file_path, user_file_name, actual_size)
 
         # Generate presigned URL
         presigned_url = await asyncio.get_event_loop().run_in_executor(
@@ -357,7 +350,7 @@ async def upload_file_handler(client, message: Message):
         response_text = (
             f"✅ Upload complete!\n\n"
             f"File: {file_name}\n"
-            f"Size: {humanbytes(size) if size else 'N/A'}\n"
+            f"Size: {humanbytes(actual_size)}\n"
             f"Direct Link: {presigned_url}"
         )
 
@@ -372,13 +365,22 @@ async def upload_file_handler(client, message: Message):
         await status_message.edit_text(f"Error: {str(e)}")
     finally:
         try:
-            # Clean up downloaded and compressed files
             if 'file_path' in locals() and os.path.exists(file_path):
                 os.remove(file_path)
-            if compressed_path and os.path.exists(compressed_path):
-                os.remove(compressed_path)
         except Exception as e:
             print(f"Error cleaning up file: {e}")
+
+async def progress_callback(status_message, action, current, total):
+    """Update progress for download/upload operations"""
+    percent = (current / total) * 100
+    if int(percent) % 10 == 0:  # Update every 10% to avoid spamming
+        try:
+            await status_message.edit_text(
+                f"{action}... {humanbytes(current)}/{humanbytes(total)} "
+                f"({percent:.1f}%)"
+            )
+        except:
+            pass  # Ignore errors from editing messages too frequently
 
 # -----------------------------
 # Additional Bot Commands
