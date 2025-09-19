@@ -1,65 +1,66 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Telegram Bot Status</title>
-  <style>
-    body {
-      font-family: Arial, sans-serif;
-      text-align: center;
-      padding: 50px;
-      background-color: #f0f2f5;
-    }
-    h1 {
-      color: #333;
-    }
-    .status {
-      margin-top: 30px;
-      font-size: 24px;
-      padding: 20px;
-      border-radius: 10px;
-      display: inline-block;
-    }
-    .online {
-      color: #ffffff;
-      background-color: #28a745;
-    }
-    .offline {
-      color: #ffffff;
-      background-color: #dc3545;
-    }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wasabi Storage Bot</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+        }
+        .feature-list {
+            margin: 20px 0;
+        }
+        .feature {
+            margin: 10px 0;
+            padding: 10px;
+            background-color: #f0f8ff;
+            border-left: 4px solid #4a90e2;
+            border-radius: 4px;
+        }
+    </style>
 </head>
 <body>
-  <h1>Telegram Bot Runtime Check</h1>
-  <div id="bot-status" class="status online">✅ Bot is running!</div>
-
-  <script>
-    // Example of dynamic status check
-    async function checkStatus() {
-      try {
-        const response = await fetch("/status"); // endpoint from Flask or API
-        const data = await response.json();
-        const statusDiv = document.getElementById("bot-status");
-
-        if (data.online) {
-          statusDiv.textContent = "✅ Bot is running!";
-          statusDiv.className = "status online";
-        } else {
-          statusDiv.textContent = "❌ Bot is offline!";
-          statusDiv.className = "status offline";
-        }
-      } catch (error) {
-        const statusDiv = document.getElementById("bot-status");
-        statusDiv.textContent = "⚠️ Unable to reach server!";
-        statusDiv.className = "status offline";
-      }
-    }
-
-    // Optional: Refresh status every 10 seconds
-    setInterval(checkStatus, 10000);
-    checkStatus();
-  </script>
+    <div class="container">
+        <h1>Wasabi Storage Bot</h1>
+        <p>This service provides high-speed file storage and media playback through Telegram.</p>
+        
+        <div class="feature-list">
+            <div class="feature">
+                <strong>High-Speed Transfers</strong>: Optimized download and upload speeds with parallel processing.
+            </div>
+            <div class="feature">
+                <strong>Media Playback</strong>: Direct playback of video and audio files in your browser.
+            </div>
+            <div class="feature">
+                <strong>Secure Storage</strong>: All files are securely stored on Wasabi cloud storage.
+            </div>
+            <div class="feature">
+                <strong>Easy Access</strong>: Access your files anytime through Telegram commands.
+            </div>
+        </div>
+        
+        <p>To use this service, simply send files to the Telegram bot or use the commands:</p>
+        <ul>
+            <li><code>/start</code> - Show help information</li>
+            <li><code>/list</code> - List your stored files</li>
+            <li><code>/download &lt;filename&gt;</code> - Get a download link</li>
+            <li><code>/play &lt;filename&gt;</code> - Get a player link for media files</li>
+        </ul>
+    </div>
 </body>
 </html>
