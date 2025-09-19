@@ -6,6 +6,7 @@ import time
 import logging
 import asyncio
 import aiosqlite
+import json
 from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.types import (
@@ -57,7 +58,6 @@ async def init_db():
         await db.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
-                channel_id INTEGER,
                 settings TEXT
             )
         ''')
@@ -205,33 +205,32 @@ class S3Progress:
         self._action = action
         self._start_time = start_time
         self._seen_so_far = 0
-        self._lock = asyncio.Lock()
-        # Create a new event loop for the background thread
-        self._loop = asyncio.new_event_loop()
 
     def __call__(self, bytes_amount):
         self._seen_so_far += bytes_amount
         
-        # Run the progress update in the background thread's event loop
-        if not self._loop.is_running():
-            asyncio.set_event_loop(self._loop)
-            
+        # Create a new event loop for the background thread if needed
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
         # Use thread-safe execution
         asyncio.run_coroutine_threadsafe(
             self._update_progress(), 
-            self._loop
+            loop
         )
 
     async def _update_progress(self):
         """Update progress in a thread-safe manner."""
-        async with self._lock:
-            await progress_callback(
-                self._seen_so_far, 
-                self._total_size, 
-                self._message, 
-                self._action, 
-                self._start_time
-            )
+        await progress_callback(
+            self._seen_so_far, 
+            self._total_size, 
+            self._message, 
+            self._action, 
+            self._start_time
+        )
 
 # --- Bot Command Handlers ---
 @app.on_message(filters.command("start"))
@@ -472,11 +471,27 @@ def get_file_actions_keyboard(file_id, url):
     return InlineKeyboardMarkup(keyboard)
 
 # --- Main Execution ---
+async def main():
+    """Main function to run the bot."""
+    await init_db()
+    await app.start()
+    LOGGER.info("Bot started successfully!")
+    
+    # Keep the bot running
+    await asyncio.Event().wait()
+
 if __name__ == "__main__":
     if not all([API_ID, API_HASH, BOT_TOKEN, WASABI_ACCESS_KEY, WASABI_SECRET_KEY, WASABI_BUCKET, WASABI_REGION]):
         LOGGER.error("One or more required environment variables are missing. Bot cannot start.")
     else:
-        LOGGER.info("Bot is starting...")
-        # Initialize database
-        asyncio.run(init_db())
-        app.run()
+        try:
+            # Run the bot with proper asyncio event loop handling
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            LOGGER.info("Bot stopped by user")
+        except Exception as e:
+            LOGGER.error(f"An error occurred: {e}")
+        finally:
+            # Ensure the bot is properly stopped
+            if app.is_connected:
+                app.stop()
