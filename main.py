@@ -117,22 +117,31 @@ def generate_player_url(filename, presigned_url):
 # -----------------------------
 # Progress Callbacks
 # -----------------------------
-async def progress_for_pyrogram(current, total, message, start_time, prefix="Downloading"):
+async def progress_callback(current, total, message, start_time, prefix="Downloading"):
     now = time.time()
     diff = max(now - start_time, 1)
+
     percentage = current * 100 / total
-    speed = current / diff  # bytes per sec
+    speed = current / diff
     speed_mb = speed / (1024 * 1024)
     eta = (total - current) / speed if speed > 0 else 0
     eta = time.strftime("%H:%M:%S", time.gmtime(eta))
+
     speed_icon = "⚡" if speed_mb < 5 else "⚡⚡" if speed_mb < 20 else "🚀"
+
+    # progress bar
+    bar_length = 15
+    filled = int(bar_length * percentage / 100)
+    bar = "█" * filled + "—" * (bar_length - filled)
 
     text = (
         f"{prefix}...\n"
-        f"📦 {humanbytes(current)} / {humanbytes(total)} ({percentage:.2f}%)\n"
+        f"[{bar}] {percentage:.2f}%\n"
+        f"📦 {humanbytes(current)} / {humanbytes(total)}\n"
         f"{speed_icon} Speed: {speed_mb:.2f} MB/s\n"
         f"⏳ ETA: {eta}"
     )
+
     try:
         await message.edit_text(text)
     except:
@@ -142,19 +151,27 @@ def upload_progress(chunk):
     upload_progress.current += chunk
     now = time.time()
     diff = max(now - upload_progress.start_time, 1)
+
     speed = upload_progress.current / diff
     speed_mb = speed / (1024 * 1024)
     percentage = upload_progress.current * 100 / upload_progress.total
     eta = (upload_progress.total - upload_progress.current) / speed if speed > 0 else 0
     eta = time.strftime("%H:%M:%S", time.gmtime(eta))
+
     speed_icon = "⚡" if speed_mb < 5 else "⚡⚡" if speed_mb < 20 else "🚀"
+
+    bar_length = 15
+    filled = int(bar_length * percentage / 100)
+    bar = "█" * filled + "—" * (bar_length - filled)
 
     text = (
         f"☁️ Uploading...\n"
-        f"📦 {humanbytes(upload_progress.current)} / {humanbytes(upload_progress.total)} ({percentage:.2f}%)\n"
+        f"[{bar}] {percentage:.2f}%\n"
+        f"📦 {humanbytes(upload_progress.current)} / {humanbytes(upload_progress.total)}\n"
         f"{speed_icon} Speed: {speed_mb:.2f} MB/s\n"
         f"⏳ ETA: {eta}"
     )
+
     asyncio.run_coroutine_threadsafe(
         upload_progress.message.edit_text(text),
         upload_progress.loop
@@ -195,7 +212,7 @@ async def upload_file_handler(client, message: Message):
     try:
         file_path = await message.download(
             file_name=DOWNLOAD_DIR,
-            progress=progress_for_pyrogram,
+            progress=progress_callback,
             progress_args=(status_message, start_time, "Downloading")
         )
 
@@ -262,4 +279,4 @@ if __name__ == "__main__":
 
     print("Starting Wasabi Storage Bot...")
     app.run()
-    
+        
