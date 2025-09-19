@@ -6,6 +6,7 @@ import time
 import traceback
 from pathlib import Path
 from datetime import datetime
+from threading import Thread
 
 import boto3
 from dotenv import load_dotenv
@@ -13,8 +14,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import BadRequest
 
-from flask import Flask, render_template, request
-from threading import Thread
+from flask import Flask, render_template
 
 # -----------------------------
 # Load environment variables
@@ -64,18 +64,15 @@ flask_app = Flask(__name__, template_folder="templates")
 
 @flask_app.route("/")
 def index():
-    """Main landing page for the web interface"""
     bot_username = os.getenv("BOT_USERNAME", "your_bot_username")
     return render_template("index.html", bot_username=bot_username, render_url=required_env_vars["RENDER_URL"])
 
 @flask_app.route("/player/<media_type>/<encoded_url>")
 def player(media_type, encoded_url):
-    """Media player page for video/audio files"""
     return render_template("player.html", media_type=media_type, encoded_url=encoded_url)
 
 @flask_app.route("/about")
 def about():
-    """About page"""
     return render_template("about.html")
 
 def run_flask():
@@ -142,90 +139,63 @@ def progress_bar(percentage, length=20):
     return "█" * filled + "░" * empty
 
 # -----------------------------
-# Download Progress Tracker
+# Async-safe Download Progress
 # -----------------------------
 class DownloadProgress:
-    def __init__(self, total_size):
-        self.total_size = total_size
+    def __init__(self, total_size, message):
+        self.total_size = total_size or 0
         self.downloaded = 0
         self.start_time = time.time()
-        self.last_update_time = self.start_time
-        self.last_downloaded = 0
+        self.last_update = 0
+        self.message = message
         self.speed = 0
         self.eta = "Calculating..."
-        self.last_message_id = None
-        
-    def update(self, downloaded):
-        current_time = time.time()
-        self.downloaded = downloaded
-        
-        # Calculate speed (every 0.5 seconds)
-        if current_time - self.last_update_time >= 0.5:
-            time_diff = current_time - self.last_update_time
-            downloaded_diff = downloaded - self.last_downloaded
-            
-            if time_diff > 0:
-                self.speed = downloaded_diff / time_diff
-                
-                # Calculate ETA
-                if self.speed > 0:
-                    remaining = self.total_size - downloaded
-                    self.eta = humantime(remaining / self.speed)
-                else:
-                    self.eta = "∞"
-            
-            self.last_update_time = current_time
-            self.last_downloaded = downloaded
-            
-        return True
-    
-    def get_progress_text(self, filename):
-        progress_percent = (self.downloaded / self.total_size) * 100 if self.total_size > 0 else 0
-        progress_bar_str = progress_bar(progress_percent)
-        
+
+    def update(self, current):
+        now = time.time()
+        self.downloaded = current
+        if now - self.last_update >= 1:  # update every 1 second
+            elapsed = now - self.start_time
+            self.speed = self.downloaded / elapsed if elapsed > 0 else 0
+            self.eta = humantime((self.total_size - self.downloaded) / self.speed) if self.speed > 0 else "∞"
+            self.last_update = now
+            return True
+        return False
+
+    def get_text(self, filename):
+        progress_percent = (self.downloaded / self.total_size) * 100 if self.total_size else 0
+        bar = progress_bar(progress_percent)
         return (
             f"📥 Downloading...\n\n"
             f"File: {filename}\n"
-            f"Progress: {progress_bar_str} {progress_percent:.1f}%\n"
+            f"Progress: {bar} {progress_percent:.1f}%\n"
             f"Downloaded: {humanbytes(self.downloaded)} / {humanbytes(self.total_size)}\n"
             f"Speed: {humanbytes(self.speed)}/s\n"
             f"ETA: {self.eta}"
         )
 
 # -----------------------------
-# Custom Download with Progress
+# Async-safe file download
 # -----------------------------
-async def download_file_with_progress(client, message, progress):
-    """Custom download function with proper progress tracking"""
-    file_name = "File"
-    
-    if message.document:
-        file_name = message.document.file_name or "Document"
-        file_size = message.document.file_size
-    elif message.video:
-        file_name = message.video.file_name or "Video"
-        file_size = message.video.file_size
-    elif message.audio:
-        file_name = message.audio.file_name or "Audio"
-        file_size = message.audio.file_size
-    elif message.photo:
-        file_name = "Photo.jpg"
-        file_size = None  # Photos don't have file_size attribute
-    else:
-        file_name = "File"
-        file_size = None
-    
-    # Update progress with actual file name
-    progress_status = await message.reply_text(progress.get_progress_text(file_name))
-    progress.last_message_id = progress_status.id
-    
-    # Create a custom download function
-    file_path = await message.download(
-        progress=lambda current, total: progress.update(current),
-        progress_args=(progress, file_name, progress_status)
+async def download_file(client, message, progress: DownloadProgress):
+    media = message.document or message.video or message.audio or message.photo
+    filename = getattr(media, "file_name", "File")
+    size = getattr(media, "file_size", None)
+    progress.total_size = size or 0
+
+    status_msg = await message.reply_text(progress.get_text(filename))
+    progress.message = status_msg
+
+    def progress_callback(current, total):
+        progress.update(current)
+        asyncio.create_task(progress.message.edit_text(progress.get_text(filename)))
+
+    file_path = await client.download_media(
+        message,
+        file_name=DOWNLOAD_DIR / sanitize_filename(filename),
+        progress=progress_callback
     )
-    
-    return file_path, file_name
+    return file_path, filename
 
 # -----------------------------
 # Telegram Bot Handlers
@@ -246,7 +216,6 @@ async def start_command(client, message: Message):
 
 @app.on_message(filters.command("web"))
 async def web_command(client, message: Message):
-    """Send the web interface link"""
     if required_env_vars["RENDER_URL"]:
         await message.reply_text(f"🌐 Web Interface: {required_env_vars['RENDER_URL']}")
     else:
@@ -255,29 +224,23 @@ async def web_command(client, message: Message):
 @app.on_message(filters.document | filters.video | filters.audio | filters.photo)
 async def upload_file_handler(client, message: Message):
     media = message.document or message.video or message.audio or message.photo
-    if not media:
-        await message.reply_text("Unsupported file type")
-        return
-
     size = getattr(media, "file_size", None)
+
     if size and size > MAX_FILE_SIZE:
-        await message.reply_text(f"File too large. Maximum size is {humanbytes(MAX_FILE_SIZE)}")
+        await message.reply_text(f"File too large. Max size: {humanbytes(MAX_FILE_SIZE)}")
         return
 
-    # Initialize progress tracker
-    progress = DownloadProgress(size)
-    
+    progress = DownloadProgress(size, None)
+
     try:
-        # Download file with progress tracking
-        file_path, file_name = await download_file_with_progress(client, message, progress)
-        
-        # Get final filename and prepare for upload
-        final_file_name = sanitize_filename(file_name)
+        # Download
+        file_path, filename = await download_file(client, message, progress)
+
+        final_file_name = sanitize_filename(filename)
         user_file_name = f"{get_user_folder(message.from_user.id)}/{final_file_name}"
 
-        # Upload to Wasabi
-        status_message = await message.reply_text("📤 Uploading to Wasabi...")
-        
+        # Upload to Wasabi (blocking call in thread)
+        status_msg = await message.reply_text("📤 Uploading to Wasabi...")
         await asyncio.to_thread(
             s3_client.upload_file,
             file_path,
@@ -300,39 +263,22 @@ async def upload_file_handler(client, message: Message):
             f"Size: {humanbytes(size) if size else 'N/A'}\n"
             f"Direct Link: {presigned_url}"
         )
-
-        # Add player URL to response if available
         if player_url:
             response_text += f"\n\nPlayer URL: {player_url}"
-
-        # Add web interface link if available
         if required_env_vars["RENDER_URL"]:
             response_text += f"\n\n🌐 Web Interface: {required_env_vars['RENDER_URL']}"
 
-        await status_message.edit_text(response_text)
+        await status_msg.edit_text(response_text)
 
     except Exception as e:
         print("Error:", traceback.format_exc())
         await message.reply_text(f"Error: {str(e)}")
     finally:
         try:
-            if 'file_path' in locals():
+            if 'file_path' in locals() and os.path.exists(file_path):
                 os.remove(file_path)
-        except FileNotFoundError:
+        except:
             pass
-
-async def update_progress_message(progress, file_name, status_message):
-    """Update the progress message with rate limiting"""
-    try:
-        # Only update if progress has changed significantly
-        current_time = time.time()
-        if current_time - progress.last_update_time >= 1.0:  # Update every 1 second
-            await status_message.edit_text(progress.get_progress_text(file_name))
-    except BadRequest:
-        # Message not modified (same content), ignore
-        pass
-    except Exception as e:
-        print(f"Error updating progress: {e}")
 
 # -----------------------------
 # Run Both Flask + Bot
@@ -343,3 +289,4 @@ if __name__ == "__main__":
 
     print("Starting Wasabi Storage Bot...")
     app.run()
+    
