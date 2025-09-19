@@ -3,6 +3,8 @@ import time
 import boto3
 import asyncio
 import re
+import json
+import base64
 from pathlib import Path
 from urllib.parse import quote, urlencode
 from pyrogram import Client, filters
@@ -91,14 +93,27 @@ def generate_player_url(filename, presigned_url):
         
     file_type = get_file_type(filename)
     if file_type in ['video', 'audio', 'image']:
-        # Properly encode all parameters
-        params = {
-            'url': presigned_url,
-            'type': file_type,
-            'title': filename
-        }
-        return f"{required_env_vars['RENDER_URL']}/player?{urlencode(params)}"
+        # Create a simple, clean URL without complex query parameters
+        # Encode the presigned URL to make it URL-safe
+        encoded_url = base64.urlsafe_b64encode(presigned_url.encode()).decode()
+        # Remove padding to make it cleaner
+        encoded_url = encoded_url.rstrip('=')
+        
+        # Create a simple URL with just the encoded presigned URL
+        return f"{required_env_vars['RENDER_URL']}/player/{file_type}/{encoded_url}"
     return None
+
+def decode_player_url(encoded_url):
+    """Decode the encoded URL from the player URL"""
+    # Add padding back if needed
+    padding = 4 - (len(encoded_url) % 4)
+    if padding != 4:
+        encoded_url += '=' * padding
+    
+    try:
+        return base64.urlsafe_b64decode(encoded_url).decode()
+    except:
+        return None
 
 # Bot handlers
 @app.on_message(filters.command("start"))
@@ -168,10 +183,16 @@ async def upload_file_handler(client, message: Message):
         
         # Add player button if available
         if player_url:
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎥 Open in Web Player", url=player_url)]
-            ])
-            await status_message.edit_text(response_text, reply_markup=keyboard)
+            # Test if the URL is valid for Telegram
+            if player_url.startswith(('http://', 'https://')) and len(player_url) <= 256:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🎥 Open in Web Player", url=player_url)]
+                ])
+                await status_message.edit_text(response_text, reply_markup=keyboard)
+            else:
+                # If URL is invalid for Telegram, just send the text
+                response_text += f"\n\nWeb Player: {player_url}"
+                await status_message.edit_text(response_text)
         else:
             await status_message.edit_text(response_text)
         
@@ -248,13 +269,20 @@ async def play_file_handler(client, message: Message):
         player_url = generate_player_url(file_name, presigned_url)
         
         if player_url:
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎥 Open in Web Player", url=player_url)]
-            ])
-            await status_message.edit_text(
-                f"Player link for {file_name}:\n\n{player_url}",
-                reply_markup=keyboard
-            )
+            # Test if the URL is valid for Telegram
+            if player_url.startswith(('http://', 'https://')) and len(player_url) <= 256:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🎥 Open in Web Player", url=player_url)]
+                ])
+                await status_message.edit_text(
+                    f"Player link for {file_name}:",
+                    reply_markup=keyboard
+                )
+            else:
+                # If URL is invalid for Telegram, just send the text
+                await status_message.edit_text(
+                    f"Player link for {file_name}:\n\n{player_url}"
+                )
         else:
             await status_message.edit_text(
                 f"File type not supported for web player. Supported formats: "
