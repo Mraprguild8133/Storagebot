@@ -3,126 +3,60 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Media Player - Wasabi Storage</title>
+    <title>Media Player</title>
     <style>
         body {
-            font-family: Arial, sans-serif;
-            margin: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
             padding: 20px;
-            background-color: #1a1a1a;
-            color: white;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            min-height: 100vh;
+            background-color: #f5f8fa;
         }
         .player-container {
-            width: 100%;
-            max-width: 800px;
-            background-color: #2a2a2a;
+            background: white;
             border-radius: 10px;
             padding: 20px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
-        .media-element {
+        video, audio {
             width: 100%;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
-        video {
-            height: auto;
-            max-height: 70vh;
+            margin: 15px 0;
         }
         img {
             max-width: 100%;
-            max-height: 80vh;
-        }
-        .controls {
-            display: flex;
-            justify-content: center;
-            gap: 10px;
-            margin-top: 20px;
-        }
-        button {
-            background-color: #4a90e2;
-            color: white;
-            border: none;
-            padding: 10px 20px;
             border-radius: 5px;
-            cursor: pointer;
-            font-size: 16px;
         }
-        button:hover {
-            background-color: #357abD;
-        }
-        .download-link {
-            margin-top: 20px;
-            text-align: center;
-        }
-        a {
-            color: #4a90e2;
+        .download-btn {
+            display: inline-block;
+            background: #0088cc;
+            color: white;
+            padding: 10px 20px;
             text-decoration: none;
-        }
-        a:hover {
-            text-decoration: underline;
+            border-radius: 5px;
+            margin-top: 15px;
         }
     </style>
 </head>
 <body>
     <div class="player-container">
-        <h1>Media Player</h1>
-        
+        <h2>Media Player</h2>
         {% if media_type == 'video' %}
-        <video class="media-element" controls autoplay>
-            <source src="{{ media_url }}" type="video/mp4">
-            Your browser does not support the video tag.
-        </video>
+            <video controls>
+                <source src="{{ base64.b64decode(encoded_url + '===').decode() }}" type="video/mp4">
+                Your browser does not support the video tag.
+            </video>
         {% elif media_type == 'audio' %}
-        <audio class="media-element" controls autoplay>
-            <source src="{{ media_url }}" type="audio/mpeg">
-            Your browser does not support the audio element.
-        </audio>
+            <audio controls>
+                <source src="{{ base64.b64decode(encoded_url + '===').decode() }}" type="audio/mpeg">
+                Your browser does not support the audio element.
+            </audio>
         {% elif media_type == 'image' %}
-        <img class="media-element" src="{{ media_url }}" alt="Image">
-        {% else %}
-        <p>Unsupported media type: {{ media_type }}</p>
+            <img src="{{ base64.b64decode(encoded_url + '===').decode() }}" alt="Image">
         {% endif %}
         
-        <div class="controls">
-            <button onclick="togglePlayPause()">Play/Pause</button>
-            <button onclick="toggleFullscreen()">Fullscreen</button>
-            <button onclick="window.location.reload()">Reload</button>
-        </div>
-        
-        <div class="download-link">
-            <p><a href="{{ media_url }}" download>Download this media</a></p>
+        <div>
+            <a href="{{ base64.b64decode(encoded_url + '===').decode() }}" class="download-btn" download>Download File</a>
         </div>
     </div>
-
-    <script>
-        function togglePlayPause() {
-            const media = document.querySelector('video') || document.querySelector('audio');
-            if (media) {
-                if (media.paused) {
-                    media.play();
-                } else {
-                    media.pause();
-                }
-            }
-        }
-        
-        function toggleFullscreen() {
-            const media = document.querySelector('video') || document.querySelector('img');
-            if (media) {
-                if (media.requestFullscreen) {
-                    media.requestFullscreen();
-                } else if (media.webkitRequestFullscreen) {
-                    media.webkitRequestFullscreen();
-                } else if (media.msRequestFullscreen) {
-                    media.msRequestFullscreen();
-                }
-            }
-        }
-    </script>
 </body>
 </html>
