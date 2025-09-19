@@ -153,6 +153,7 @@ class DownloadProgress:
         self.last_downloaded = 0
         self.speed = 0
         self.eta = "Calculating..."
+        self.last_message_id = None
         
     def update(self, downloaded):
         current_time = time.time()
@@ -190,6 +191,41 @@ class DownloadProgress:
             f"Speed: {humanbytes(self.speed)}/s\n"
             f"ETA: {self.eta}"
         )
+
+# -----------------------------
+# Custom Download with Progress
+# -----------------------------
+async def download_file_with_progress(client, message, progress):
+    """Custom download function with proper progress tracking"""
+    file_name = "File"
+    
+    if message.document:
+        file_name = message.document.file_name or "Document"
+        file_size = message.document.file_size
+    elif message.video:
+        file_name = message.video.file_name or "Video"
+        file_size = message.video.file_size
+    elif message.audio:
+        file_name = message.audio.file_name or "Audio"
+        file_size = message.audio.file_size
+    elif message.photo:
+        file_name = "Photo.jpg"
+        file_size = None  # Photos don't have file_size attribute
+    else:
+        file_name = "File"
+        file_size = None
+    
+    # Update progress with actual file name
+    progress_status = await message.reply_text(progress.get_progress_text(file_name))
+    progress.last_message_id = progress_status.id
+    
+    # Create a custom download function
+    file_path = await message.download(
+        progress=lambda current, total: progress.update(current),
+        progress_args=(progress, file_name, progress_status)
+    )
+    
+    return file_path, file_name
 
 # -----------------------------
 # Telegram Bot Handlers
@@ -231,29 +267,16 @@ async def upload_file_handler(client, message: Message):
     # Initialize progress tracker
     progress = DownloadProgress(size)
     
-    # Create status message with initial progress
-    status_message = await message.reply_text(progress.get_progress_text("File"))
-    
     try:
-        # Define progress callback
-        def progress_callback(current, total):
-            progress.update(current)
-            # Update message every 0.5 seconds to avoid rate limiting
-            if time.time() - progress.last_update_time >= 0.5:
-                asyncio.create_task(update_progress_message(status_message, progress, "File"))
-        
         # Download file with progress tracking
-        file_path = await message.download(progress=progress_callback)
+        file_path, file_name = await download_file_with_progress(client, message, progress)
         
-        # Final progress update
-        await update_progress_message(status_message, progress, "File", final=True)
-        
-        # Get filename and prepare for upload
-        file_name = sanitize_filename(os.path.basename(file_path))
-        user_file_name = f"{get_user_folder(message.from_user.id)}/{file_name}"
+        # Get final filename and prepare for upload
+        final_file_name = sanitize_filename(file_name)
+        user_file_name = f"{get_user_folder(message.from_user.id)}/{final_file_name}"
 
         # Upload to Wasabi
-        await status_message.edit_text("📤 Uploading to Wasabi...")
+        status_message = await message.reply_text("📤 Uploading to Wasabi...")
         
         await asyncio.to_thread(
             s3_client.upload_file,
@@ -269,11 +292,11 @@ async def upload_file_handler(client, message: Message):
             ExpiresIn=86400
         )
 
-        player_url = generate_player_url(file_name, presigned_url)
+        player_url = generate_player_url(final_file_name, presigned_url)
 
         response_text = (
             f"✅ Upload complete!\n\n"
-            f"File: {file_name}\n"
+            f"File: {final_file_name}\n"
             f"Size: {humanbytes(size) if size else 'N/A'}\n"
             f"Direct Link: {presigned_url}"
         )
@@ -290,7 +313,7 @@ async def upload_file_handler(client, message: Message):
 
     except Exception as e:
         print("Error:", traceback.format_exc())
-        await status_message.edit_text(f"Error: {str(e)}")
+        await message.reply_text(f"Error: {str(e)}")
     finally:
         try:
             if 'file_path' in locals():
@@ -298,17 +321,18 @@ async def upload_file_handler(client, message: Message):
         except FileNotFoundError:
             pass
 
-async def update_progress_message(message, progress, filename, final=False):
+async def update_progress_message(progress, file_name, status_message):
     """Update the progress message with rate limiting"""
     try:
-        if final:
-            text = progress.get_progress_text(filename).replace("Downloading...", "Download complete!")
-            await message.edit_text(text)
-        else:
-            await message.edit_text(progress.get_progress_text(filename))
+        # Only update if progress has changed significantly
+        current_time = time.time()
+        if current_time - progress.last_update_time >= 1.0:  # Update every 1 second
+            await status_message.edit_text(progress.get_progress_text(file_name))
     except BadRequest:
         # Message not modified (same content), ignore
         pass
+    except Exception as e:
+        print(f"Error updating progress: {e}")
 
 # -----------------------------
 # Run Both Flask + Bot
