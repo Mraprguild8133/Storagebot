@@ -73,11 +73,21 @@ def human_readable_size(size, decimal_places=2):
     return f"{size:.{decimal_places}f} {unit}"
 
 
-async def progress_callback(current, total, message, action):
+progress_update_tracker = {}
+
+async def progress_callback(current, total, message, action, start_time):
     """Updates the progress message during uploads/downloads."""
+    key = (message.chat.id, message.id)
+    now = time.time()
+
+    # Rate limit updates to once every 2 seconds to avoid FloodWait
+    if key in progress_update_tracker and now - progress_update_tracker.get(key, 0) < 2:
+        return
+    progress_update_tracker[key] = now
+    
     try:
         percentage = current * 100 / total
-        elapsed_time = time.time() - message.date
+        elapsed_time = now - start_time
         speed = current / elapsed_time if elapsed_time > 0 else 0
         progress_str = (
             f"{action}:\n"
@@ -128,6 +138,23 @@ async def help_command(_, message: Message):
     )
     await message.reply_text(help_text, quote=True)
 
+class S3Progress:
+    """A class to track S3 upload progress and report it via a callback."""
+    def __init__(self, message, total_size, action, start_time):
+        self._message = message
+        self._total_size = total_size
+        self._action = action
+        self._start_time = start_time
+        self._seen_so_far = 0
+        self._loop = asyncio.get_event_loop()
+
+    def __call__(self, bytes_amount):
+        self._seen_so_far += bytes_amount
+        asyncio.run_coroutine_threadsafe(
+            progress_callback(self._seen_so_far, self._total_size, self._message, self._action, self._start_time),
+            self._loop
+        )
+
 @app.on_message(filters.document | filters.video | filters.audio | filters.photo | filters.command("upload"))
 async def upload_handler(client: Client, message: Message):
     """Handles file uploads."""
@@ -153,10 +180,11 @@ async def upload_handler(client: Client, message: Message):
 
     # Download from Telegram
     status_msg = await message.reply_text("📥 Starting download from Telegram...", quote=True)
+    start_time = time.time()
     file_path = await client.download_media(
         media,
         progress=progress_callback,
-        progress_args=(status_msg, "Downloading"),
+        progress_args=(status_msg, "Downloading", start_time),
     )
     
     await status_msg.edit_text("✅ Download complete. Now uploading to Wasabi...")
@@ -166,11 +194,12 @@ async def upload_handler(client: Client, message: Message):
     file_name = getattr(media, "file_name", f"{file_id}.jpg") # Default for photos
     
     try:
+        start_time_s3 = time.time()
         s3_client.upload_file(
             file_path,
             WASABI_BUCKET,
             file_name,
-            Callback=lambda bytes_transferred: s3_progress_callback(bytes_transferred, media.file_size, status_msg, "Uploading"),
+            Callback=S3Progress(status_msg, media.file_size, "Uploading", start_time_s3),
         )
         # Store file metadata
         file_db[file_id] = {
@@ -214,25 +243,6 @@ async def upload_handler(client: Client, message: Message):
     finally:
         if os.path.exists(file_path):
             os.remove(file_path)
-
-# A simple wrapper for S3 upload progress
-upload_progress_tracker = {}
-def s3_progress_callback(bytes_transferred, total_size, message, action):
-    loop = asyncio.get_event_loop()
-    key = message.chat.id, message.message_id
-    
-    if key not in upload_progress_tracker:
-        upload_progress_tracker[key] = {'last_update': 0, 'bytes': 0}
-
-    upload_progress_tracker[key]['bytes'] += bytes_transferred
-    current_bytes = upload_progress_tracker[key]['bytes']
-    
-    now = time.time()
-    if now - upload_progress_tracker[key]['last_update'] > 2: # Update every 2 seconds
-        upload_progress_tracker[key]['last_update'] = now
-        asyncio.run_coroutine_threadsafe(
-            progress_callback(current_bytes, total_size, message, action), loop
-        )
 
 @app.on_message(filters.command("list"))
 async def list_files_command(_, message: Message):
