@@ -1,13 +1,11 @@
 import os
-import time
-import boto3
 import asyncio
 import re
 import json
 import base64
 import traceback
+import boto3
 from pathlib import Path
-from urllib.parse import quote, urlencode
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from dotenv import load_dotenv
@@ -15,7 +13,6 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Configuration - with validation
 required_env_vars = {
     "API_ID": os.getenv("API_ID"),
     "API_HASH": os.getenv("API_HASH"),
@@ -24,26 +21,23 @@ required_env_vars = {
     "WASABI_SECRET_KEY": os.getenv("WASABI_SECRET_KEY"),
     "WASABI_BUCKET": os.getenv("WASABI_BUCKET"),
     "WASABI_REGION": os.getenv("WASABI_REGION"),
-    "RENDER_URL": os.getenv("RENDER_URL", "").rstrip('/'),
+    "RENDER_URL": os.getenv("RENDER_URL", "").rstrip('/')
 }
 
-# Check for missing environment variables
 missing_vars = [var for var, value in required_env_vars.items() if not value and var != "RENDER_URL"]
 if missing_vars:
     raise Exception(f"Missing environment variables: {', '.join(missing_vars)}")
 
-# Initialize clients
-app = Client(
-    "wasabi_bot",
+# Init bot + Wasabi
+app = Client("wasabi_bot",
     api_id=required_env_vars["API_ID"],
     api_hash=required_env_vars["API_HASH"],
     bot_token=required_env_vars["BOT_TOKEN"]
 )
 
-wasabi_endpoint_url = f'https://s3.{required_env_vars["WASABI_REGION"]}.wasabisys.com'
 s3_client = boto3.client(
     's3',
-    endpoint_url=wasabi_endpoint_url,
+    endpoint_url=f'https://s3.{required_env_vars["WASABI_REGION"]}.wasabisys.com',
     aws_access_key_id=required_env_vars["WASABI_ACCESS_KEY"],
     aws_secret_access_key=required_env_vars["WASABI_SECRET_KEY"]
 )
@@ -53,14 +47,13 @@ MAX_FILE_SIZE = 2000 * 1024 * 1024  # 2GB
 DOWNLOAD_DIR = Path("./downloads")
 DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-# Supported media extensions for web player
 MEDIA_EXTENSIONS = {
     'video': ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v'],
     'audio': ['.mp3', '.m4a', '.ogg', '.wav', '.flac'],
     'image': ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']
 }
 
-# Helper functions
+# Helpers
 def humanbytes(size):
     if not size:
         return "0 B"
@@ -72,8 +65,7 @@ def humanbytes(size):
         size /= power
     return f"{size:.2f} TB"
 
-def get_user_folder(user_id):
-    return f"user_{user_id}"
+def get_user_folder(user_id): return f"user_{user_id}"
 
 def sanitize_filename(filename, max_length=150):
     filename = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
@@ -81,47 +73,32 @@ def sanitize_filename(filename, max_length=150):
 
 def get_file_type(filename):
     ext = os.path.splitext(filename)[1].lower()
-    for file_type, extensions in MEDIA_EXTENSIONS.items():
-        if ext in extensions:
-            return file_type
+    for t, exts in MEDIA_EXTENSIONS.items():
+        if ext in exts: return t
     return 'other'
 
 def generate_player_url(filename, presigned_url):
-    if not required_env_vars["RENDER_URL"]:
-        return None
-
+    if not required_env_vars["RENDER_URL"]: return None
     file_type = get_file_type(filename)
     if file_type in ['video', 'audio', 'image']:
-        encoded_url = base64.urlsafe_b64encode(presigned_url.encode()).decode()
-        encoded_url = encoded_url.rstrip('=')
-        return f"{required_env_vars['RENDER_URL']}/player/{file_type}/{encoded_url}"
+        encoded = base64.urlsafe_b64encode(presigned_url.encode()).decode().rstrip("=")
+        return f"{required_env_vars['RENDER_URL']}/player/{file_type}/{encoded}"
     return None
 
-def decode_player_url(encoded_url):
-    padding = len(encoded_url) % 4
-    if padding:
-        encoded_url += "=" * (4 - padding)
-    try:
-        return base64.urlsafe_b64decode(encoded_url).decode()
-    except Exception:
-        return None
-
-# Bot handlers
+# Commands
 @app.on_message(filters.command("start"))
 async def start_command(client, message: Message):
-    welcome_text = (
+    txt = (
         "🚀 **Cloud Storage Bot**\n\n"
         "Send me any file to upload to Wasabi storage\n"
-        "Use /download <filename> to download files\n"
+        "Use /download <filename>\n"
         "Use /list to see your files\n"
-        "Use /play <filename> to get a web player link (for media files)\n\n"
-        "⚠️ Maximum file size: 2GB"
+        "Use /play <filename> to get a web player link\n\n"
+        f"⚠️ Max size: {humanbytes(MAX_FILE_SIZE)}"
     )
-
     if required_env_vars["RENDER_URL"]:
-        welcome_text += "\n\n🎥 Web player support is enabled!"
-
-    await message.reply_text(welcome_text)
+        txt += "\n\n🎥 Web player support is enabled!"
+    await message.reply_text(txt)
 
 @app.on_message(filters.document | filters.video | filters.audio | filters.photo)
 async def upload_file_handler(client, message: Message):
@@ -129,162 +106,109 @@ async def upload_file_handler(client, message: Message):
     if not media:
         await message.reply_text("Unsupported file type")
         return
-
     size = getattr(media, "file_size", None)
     if size and size > MAX_FILE_SIZE:
-        await message.reply_text(f"File too large. Maximum size is {humanbytes(MAX_FILE_SIZE)}")
+        await message.reply_text(f"File too large. Max {humanbytes(MAX_FILE_SIZE)}")
         return
-
-    status_message = await message.reply_text("Downloading file...")
-
+    status = await message.reply_text("⬇️ Downloading...")
     try:
         file_path = await message.download()
         file_name = sanitize_filename(os.path.basename(file_path))
-        user_file_name = f"{get_user_folder(message.from_user.id)}/{file_name}"
+        user_file = f"{get_user_folder(message.from_user.id)}/{file_name}"
 
-        await asyncio.to_thread(
-            s3_client.upload_file,
-            file_path,
-            required_env_vars["WASABI_BUCKET"],
-            user_file_name
-        )
+        await asyncio.to_thread(s3_client.upload_file, file_path, required_env_vars["WASABI_BUCKET"], user_file)
 
         presigned_url = s3_client.generate_presigned_url(
             'get_object',
-            Params={'Bucket': required_env_vars["WASABI_BUCKET"], 'Key': user_file_name},
+            Params={'Bucket': required_env_vars["WASABI_BUCKET"], 'Key': user_file},
             ExpiresIn=86400
         )
-
         player_url = generate_player_url(file_name, presigned_url)
 
-        response_text = (
-            f"✅ Upload complete!\n\n"
-            f"File: {file_name}\n"
-            f"Size: {humanbytes(size) if size else 'N/A'}\n"
-            f"Direct Link: {presigned_url}"
-        )
-
-        if player_url and player_url.startswith(('http://', 'https://')) and len(player_url) <= 256:
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🎥 Open in Web Player", url=player_url)]])
-            await status_message.edit_text(response_text, reply_markup=keyboard)
-        elif player_url:
-            response_text += f"\n\nWeb Player: {player_url}"
-            await status_message.edit_text(response_text)
+        resp = f"✅ Uploaded!\n\n📂 {file_name}\n📏 {humanbytes(size)}\n🔗 {presigned_url}"
+        if player_url:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🎥 Web Player", url=player_url)]])
+            await status.edit_text(resp, reply_markup=kb)
         else:
-            await status_message.edit_text(response_text)
-
-    except Exception as e:
-        print("Error:", traceback.format_exc())
-        await status_message.edit_text(f"Error: {str(e)}")
+            await status.edit_text(resp)
+    except Exception:
+        await status.edit_text(f"❌ Error:\n{traceback.format_exc()}")
     finally:
-        try:
-            if 'file_path' in locals():
-                os.remove(file_path)
-        except FileNotFoundError:
-            pass
+        try: os.remove(file_path)
+        except: pass
 
 @app.on_message(filters.command("download"))
 async def download_file_handler(client, message: Message):
     if len(message.command) < 2:
         await message.reply_text("Usage: /download <filename>")
         return
-
     file_name = " ".join(message.command[1:])
-    sanitized_name = sanitize_filename(file_name)
-    user_file_name = f"{get_user_folder(message.from_user.id)}/{sanitized_name}"
-    local_path = DOWNLOAD_DIR / sanitized_name
-
-    status_message = await message.reply_text(f"Downloading {file_name}...")
-
+    safe_name = sanitize_filename(file_name)
+    user_file = f"{get_user_folder(message.from_user.id)}/{safe_name}"
+    local_path = DOWNLOAD_DIR / safe_name
+    status = await message.reply_text(f"⬇️ Downloading {file_name}...")
     try:
-        await asyncio.to_thread(
-            s3_client.download_file,
-            required_env_vars["WASABI_BUCKET"],
-            user_file_name,
-            str(local_path)
-        )
-
-        await message.reply_document(document=str(local_path), caption=f"Downloaded: {file_name}")
-        await status_message.delete()
-
-    except Exception as e:
-        print("Error:", traceback.format_exc())
-        await status_message.edit_text(f"Error: {str(e)}")
+        await asyncio.to_thread(s3_client.download_file,
+            required_env_vars["WASABI_BUCKET"], user_file, str(local_path))
+        await message.reply_document(str(local_path), caption=f"📂 {file_name}")
+        await status.delete()
+    except Exception:
+        await status.edit_text(f"❌ Error:\n{traceback.format_exc()}")
     finally:
-        try:
-            os.remove(local_path)
-        except FileNotFoundError:
-            pass
+        try: os.remove(local_path)
+        except: pass
 
 @app.on_message(filters.command("play"))
 async def play_file_handler(client, message: Message):
     if not required_env_vars["RENDER_URL"]:
-        await message.reply_text("Web player is not configured. Please set RENDER_URL environment variable.")
+        await message.reply_text("❌ Web player not configured.")
         return
-
     if len(message.command) < 2:
         await message.reply_text("Usage: /play <filename>")
         return
-
     file_name = " ".join(message.command[1:])
-    sanitized_name = sanitize_filename(file_name)
-    user_file_name = f"{get_user_folder(message.from_user.id)}/{sanitized_name}"
-
-    status_message = await message.reply_text(f"Generating player link for {file_name}...")
-
+    safe_name = sanitize_filename(file_name)
+    user_file = f"{get_user_folder(message.from_user.id)}/{safe_name}"
+    status = await message.reply_text(f"Generating player link...")
     try:
         presigned_url = s3_client.generate_presigned_url(
             'get_object',
-            Params={'Bucket': required_env_vars["WASABI_BUCKET"], 'Key': user_file_name},
+            Params={'Bucket': required_env_vars["WASABI_BUCKET"], 'Key': user_file},
             ExpiresIn=86400
         )
-
         player_url = generate_player_url(file_name, presigned_url)
-
-        if player_url and player_url.startswith(('http://', 'https://')) and len(player_url) <= 256:
-            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🎥 Open in Web Player", url=player_url)]])
-            await status_message.edit_text(f"Player link for {file_name}:", reply_markup=keyboard)
-        elif player_url:
-            await status_message.edit_text(f"Player link for {file_name}:\n\n{player_url}")
+        if player_url:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🎥 Open in Player", url=player_url)]])
+            await status.edit_text(f"Link for {file_name}:", reply_markup=kb)
         else:
-            await status_message.edit_text(
-                f"File type not supported for web player. Supported formats: "
-                f"{', '.join([ext for exts in MEDIA_EXTENSIONS.values() for ext in exts])}"
-            )
-
-    except Exception as e:
-        print("Error:", traceback.format_exc())
-        await status_message.edit_text(f"Error: {str(e)}")
+            await status.edit_text("❌ Unsupported format.")
+    except Exception:
+        await status.edit_text(f"❌ Error:\n{traceback.format_exc()}")
 
 @app.on_message(filters.command("list"))
 async def list_files(client, message: Message):
     try:
-        user_prefix = get_user_folder(message.from_user.id) + "/"
-        response = await asyncio.to_thread(
-            s3_client.list_objects_v2,
-            Bucket=required_env_vars["WASABI_BUCKET"],
-            Prefix=user_prefix
-        )
-
-        if 'Contents' not in response:
-            await message.reply_text("No files found")
+        prefix = get_user_folder(message.from_user.id) + "/"
+        resp = await asyncio.to_thread(s3_client.list_objects_v2,
+            Bucket=required_env_vars["WASABI_BUCKET"], Prefix=prefix)
+        if 'Contents' not in resp:
+            await message.reply_text("📂 No files.")
             return
-
         files = []
-        for obj in response['Contents']:
-            file_name = obj['Key'].replace(user_prefix, "")
-            if file_name:
-                file_type = get_file_type(file_name)
-                file_icon = "🎥" if file_type in ["video", "audio"] else "📄"
-                files.append(f"{file_icon} {file_name} ({humanbytes(obj['Size'])})")
-
-        files_list = "\n".join(files)
-        await message.reply_text(f"Your files:\n\n{files_list}")
-
-    except Exception as e:
-        print("Error:", traceback.format_exc())
-        await message.reply_text(f"Error: {str(e)}")
+        for obj in resp['Contents']:
+            fn = obj['Key'].replace(prefix, "")
+            if fn:
+                ft = get_file_type(fn)
+                icon = "🎥" if ft in ["video", "audio"] else "📄"
+                files.append(f"{icon} {fn} ({humanbytes(obj['Size'])})")
+        out = "\n".join(files)
+        # split if > 4000 chars
+        for i in range(0, len(out), 4000):
+            await message.reply_text(out[i:i+4000])
+    except Exception:
+        await message.reply_text(f"❌ Error:\n{traceback.format_exc()}")
 
 if __name__ == "__main__":
-    print("Starting Wasabi Storage Bot with Web Player support...")
+    print("🚀 Bot running...")
     app.run()
+    
