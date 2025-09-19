@@ -57,15 +57,32 @@ s3_client = boto3.client(
 # -----------------------------
 # Flask app for player.html
 # -----------------------------
-flask_app = Flask(__name__, template_folder="templates")
+flask_app = Flask(name, template_folder="templates")
+
+@flask_app.route("/")
+def index():
+    return render_template("index.html")
 
 @flask_app.route("/player/<media_type>/<encoded_url>")
 def player(media_type, encoded_url):
-    return render_template("player.html", media_type=media_type, encoded_url=encoded_url)
+    # Decode the URL
+    try:
+        # Add padding if needed
+        padding = 4 - (len(encoded_url) % 4)
+        if padding != 4:
+            encoded_url += '=' * padding
+        media_url = base64.urlsafe_b64decode(encoded_url).decode()
+        return render_template("player.html", media_type=media_type, media_url=media_url)
+    except Exception as e:
+        return f"Error decoding URL: {str(e)}", 400
+
+@flask_app.route("/health")
+def health():
+    return jsonify({"status": "ok"})
 
 def run_flask():
     flask_app.run(host="0.0.0.0", port=8000)
-
+    
 # -----------------------------
 # Constants & Helpers
 # -----------------------------
