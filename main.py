@@ -556,7 +556,7 @@ async def upload_file_handler(client, message: Message):
         
         await status_message.edit_text(
             message_text,
-            parse_mode=ParseMode.MARKDOWN,
+            parse_mode=ParseMode.HTML,
             reply_markup=keyboard  # This can be None if URLs are invalid
         )
         
@@ -611,7 +611,7 @@ async def play_file_handler(client, message: Message):
         
         await status_message.edit_text(
             message_text,
-            parse_mode=ParseMode.MARKDOWN,
+            parse_mode=ParseMode.HTML,
             reply_markup=keyboard
         )
 
