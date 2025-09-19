@@ -1,17 +1,18 @@
 import os
 import re
 import base64
+import time
 import asyncio
 import traceback
 from pathlib import Path
+from threading import Thread
 
 import boto3
+from boto3.s3.transfer import TransferConfig
 from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.types import Message
-
 from flask import Flask, render_template
-from threading import Thread
 
 # -----------------------------
 # Load environment variables
@@ -64,7 +65,7 @@ def player(media_type, encoded_url):
     return render_template("player.html", media_type=media_type, encoded_url=encoded_url)
 
 def run_flask():
-    flask_app.run(host="0.0.0.0", port=8000)
+    flask_app.run(host="0.0.0.0", port=8000, use_reloader=False)
 
 # -----------------------------
 # Constants & Helpers
@@ -94,8 +95,8 @@ def get_user_folder(user_id):
     return f"user_{user_id}"
 
 def sanitize_filename(filename, max_length=150):
-    filename = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
-    return filename[:max_length]
+    filename = re.sub(r'[^a-zA-Z0-9._-]+', '_', filename)
+    return filename.strip("_")[:max_length]
 
 def get_file_type(filename):
     ext = os.path.splitext(filename)[1].lower()
@@ -109,9 +110,55 @@ def generate_player_url(filename, presigned_url):
         return None
     file_type = get_file_type(filename)
     if file_type in ['video', 'audio', 'image']:
-        encoded_url = base64.urlsafe_b64encode(presigned_url.encode()).decode().rstrip('=')
+        encoded_url = base64.urlsafe_b64encode(presigned_url.encode()).decode()
         return f"{required_env_vars['RENDER_URL']}/player/{file_type}/{encoded_url}"
     return None
+
+# -----------------------------
+# Progress Callbacks
+# -----------------------------
+async def progress_for_pyrogram(current, total, message, start_time, prefix="Downloading"):
+    now = time.time()
+    diff = max(now - start_time, 1)
+    percentage = current * 100 / total
+    speed = current / diff  # bytes per sec
+    speed_mb = speed / (1024 * 1024)
+    eta = (total - current) / speed if speed > 0 else 0
+    eta = time.strftime("%H:%M:%S", time.gmtime(eta))
+    speed_icon = "⚡" if speed_mb < 5 else "⚡⚡" if speed_mb < 20 else "🚀"
+
+    text = (
+        f"{prefix}...\n"
+        f"📦 {humanbytes(current)} / {humanbytes(total)} ({percentage:.2f}%)\n"
+        f"{speed_icon} Speed: {speed_mb:.2f} MB/s\n"
+        f"⏳ ETA: {eta}"
+    )
+    try:
+        await message.edit_text(text)
+    except:
+        pass
+
+def upload_progress(chunk):
+    upload_progress.current += chunk
+    now = time.time()
+    diff = max(now - upload_progress.start_time, 1)
+    speed = upload_progress.current / diff
+    speed_mb = speed / (1024 * 1024)
+    percentage = upload_progress.current * 100 / upload_progress.total
+    eta = (upload_progress.total - upload_progress.current) / speed if speed > 0 else 0
+    eta = time.strftime("%H:%M:%S", time.gmtime(eta))
+    speed_icon = "⚡" if speed_mb < 5 else "⚡⚡" if speed_mb < 20 else "🚀"
+
+    text = (
+        f"☁️ Uploading...\n"
+        f"📦 {humanbytes(upload_progress.current)} / {humanbytes(upload_progress.total)} ({percentage:.2f}%)\n"
+        f"{speed_icon} Speed: {speed_mb:.2f} MB/s\n"
+        f"⏳ ETA: {eta}"
+    )
+    asyncio.run_coroutine_threadsafe(
+        upload_progress.message.edit_text(text),
+        upload_progress.loop
+    )
 
 # -----------------------------
 # Telegram Bot Handlers
@@ -132,7 +179,7 @@ async def start_command(client, message: Message):
 
 @app.on_message(filters.document | filters.video | filters.audio | filters.photo)
 async def upload_file_handler(client, message: Message):
-    media = message.document or message.video or message.audio or message.photo
+    media = message.document or message.video or message.audio or (message.photo[-1] if message.photo else None)
     if not media:
         await message.reply_text("Unsupported file type")
         return
@@ -142,18 +189,38 @@ async def upload_file_handler(client, message: Message):
         await message.reply_text(f"File too large. Maximum size is {humanbytes(MAX_FILE_SIZE)}")
         return
 
-    status_message = await message.reply_text("Downloading file...")
+    status_message = await message.reply_text("Starting download...")
+    start_time = time.time()
 
     try:
-        file_path = await message.download()
+        file_path = await message.download(
+            file_name=DOWNLOAD_DIR,
+            progress=progress_for_pyrogram,
+            progress_args=(status_message, start_time, "Downloading")
+        )
+
         file_name = sanitize_filename(os.path.basename(file_path))
         user_file_name = f"{get_user_folder(message.from_user.id)}/{file_name}"
+
+        # Upload with progress
+        upload_progress.current = 0
+        upload_progress.total = size
+        upload_progress.start_time = time.time()
+        upload_progress.loop = asyncio.get_event_loop()
+        upload_progress.message = status_message
+
+        config = TransferConfig(multipart_threshold=8 * 1024 * 1024,
+                                max_concurrency=10,
+                                multipart_chunksize=8 * 1024 * 1024,
+                                use_threads=True)
 
         await asyncio.to_thread(
             s3_client.upload_file,
             file_path,
             required_env_vars["WASABI_BUCKET"],
-            user_file_name
+            user_file_name,
+            Callback=upload_progress,
+            Config=config
         )
 
         presigned_url = s3_client.generate_presigned_url(
@@ -166,20 +233,19 @@ async def upload_file_handler(client, message: Message):
 
         response_text = (
             f"✅ Upload complete!\n\n"
-            f"File: {file_name}\n"
-            f"Size: {humanbytes(size) if size else 'N/A'}\n"
-            f"Direct Link: {presigned_url}"
+            f"📂 File: {file_name}\n"
+            f"📦 Size: {humanbytes(size) if size else 'N/A'}\n"
+            f"🔗 Direct Link: {presigned_url}"
         )
 
-        # Add player URL to response if available (as text, not button)
         if player_url:
-            response_text += f"\n\nPlayer URL: {player_url}"
+            response_text += f"\n\n🎥 Player URL: {player_url}"
 
         await status_message.edit_text(response_text)
 
     except Exception as e:
         print("Error:", traceback.format_exc())
-        await status_message.edit_text(f"Error: {str(e)}")
+        await status_message.edit_text(f"❌ Error: {str(e)}")
     finally:
         try:
             if 'file_path' in locals():
@@ -196,3 +262,4 @@ if __name__ == "__main__":
 
     print("Starting Wasabi Storage Bot...")
     app.run()
+    
