@@ -20,4 +20,5 @@ dependencies = [
     "requests>=2.32.5",
     "pyTelegramBotAPI>=4.29.1",
     "aiosqlite>=0.21.0",
+    "flask>=3.1.2",
    ]
