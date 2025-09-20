@@ -247,4 +247,3 @@ Thread(target=run_flask, daemon=True).start()
 if __name__ == "__main__":
     print("Starting Wasabi Storage Bot with Web Player...")
     app.run()
-        
