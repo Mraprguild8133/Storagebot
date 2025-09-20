@@ -3,6 +3,9 @@ import time
 import boto3
 import asyncio
 import re
+import base64
+from threading import Thread
+from flask import Flask, render_template
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from dotenv import load_dotenv
@@ -27,6 +30,7 @@ WASABI_ACCESS_KEY = os.getenv("WASABI_ACCESS_KEY")
 WASABI_SECRET_KEY = os.getenv("WASABI_SECRET_KEY")
 WASABI_BUCKET = os.getenv("WASABI_BUCKET")
 WASABI_REGION = os.getenv("WASABI_REGION", "us-east-1")
+RENDER_URL = os.getenv("RENDER_URL", "http://localhost:8000")
 
 # Validate environment variables
 missing_vars = []
@@ -86,6 +90,59 @@ except Exception as e:
         logger.error(f"Alternative connection also failed: {alt_e}")
         raise Exception(f"Could not connect to Wasabi: {alt_e}")
 
+# -----------------------------
+# Flask app for player.html
+# -----------------------------
+flask_app = Flask(__name__, template_folder="templates")
+
+@flask_app.route("/")
+def index():
+    return render_template("index.html")
+
+@flask_app.route("/player/<media_type>/<encoded_url>")
+def player(media_type, encoded_url):
+    try:
+        # Add padding if needed for base64 decoding
+        padding = 4 - (len(encoded_url) % 4)
+        if padding != 4:
+            encoded_url += '=' * padding
+        media_url = base64.urlsafe_b64decode(encoded_url).decode()
+        return render_template("player.html", media_type=media_type, media_url=media_url)
+    except Exception as e:
+        return f"Error decoding URL: {str(e)}", 400
+
+@flask_app.route("/about")
+def about():
+    return render_template("about.html")
+
+def run_flask():
+    flask_app.run(host="0.0.0.0", port=8000)
+
+# -----------------------------
+# Media Type Detection
+# -----------------------------
+MEDIA_EXTENSIONS = {
+    'video': ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v'],
+    'audio': ['.mp3', '.m4a', '.ogg', '.wav', '.flac'],
+    'image': ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']
+}
+
+def get_file_type(filename):
+    ext = os.path.splitext(filename)[1].lower()
+    for file_type, extensions in MEDIA_EXTENSIONS.items():
+        if ext in extensions:
+            return file_type
+    return 'other'
+
+def generate_player_url(filename, presigned_url):
+    if not RENDER_URL:
+        return None
+    file_type = get_file_type(filename)
+    if file_type in ['video', 'audio', 'image']:
+        encoded_url = base64.urlsafe_b64encode(presigned_url.encode()).decode().rstrip('=')
+        return f"{RENDER_URL}/player/{file_type}/{encoded_url}"
+    return None
+
 # Helper functions
 def humanbytes(size):
     """Convert bytes to human readable format"""
@@ -110,11 +167,14 @@ def sanitize_filename(filename):
 def get_user_folder(user_id):
     return f"user_{user_id}"
 
-def create_download_keyboard(presigned_url):
+def create_download_keyboard(presigned_url, player_url=None):
     """Create inline keyboard with download option"""
-    keyboard = [
-        [InlineKeyboardButton("📥 Direct Download", url=presigned_url)],
-    ]
+    keyboard = []
+    
+    if player_url:
+        keyboard.append([InlineKeyboardButton("🎬 Web Player", url=player_url)])
+    
+    keyboard.append([InlineKeyboardButton("📥 Direct Download", url=presigned_url)])
     
     return InlineKeyboardMarkup(keyboard)
 
@@ -122,10 +182,12 @@ def create_download_keyboard(presigned_url):
 @app.on_message(filters.command("start"))
 async def start_command(client, message: Message):
     await message.reply_text(
-        "🚀 Cloud Storage Bot\n\n"
+        "🚀 Cloud Storage Bot with Web Player\n\n"
         "Send me any file to upload to Wasabi storage\n"
         "Use /download <filename> to download files\n"
-        "Use /list to see your files"
+        "Use /play <filename> to get web player links\n"
+        "Use /list to see your files\n"
+        "Use /delete <filename> to remove files"
     )
 
 @app.on_message(filters.document | filters.video | filters.audio | filters.photo)
@@ -158,18 +220,23 @@ async def upload_file_handler(client, message: Message):
             ExpiresIn=86400
         )
         
-        # Create keyboard with download option
-        keyboard = create_download_keyboard(presigned_url)
+        # Generate player URL if supported
+        player_url = generate_player_url(file_name, presigned_url)
+        
+        # Create keyboard with options
+        keyboard = create_download_keyboard(presigned_url, player_url)
         
         file_size = media.file_size if hasattr(media, 'file_size') else 0
         if message.photo:
             file_size = os.path.getsize(file_path)
         
+        response_text = f"✅ Upload complete!\n\n📁 File: {file_name}\n📦 Size: {humanbytes(file_size)}\n⏰ Link expires: 24 hours"
+        
+        if player_url:
+            response_text += f"\n\n🎬 Web Player: {player_url}"
+        
         await status_message.edit_text(
-            f"✅ Upload complete!\n\n"
-            f"📁 File: {file_name}\n"
-            f"📦 Size: {humanbytes(file_size)}\n"
-            f"⏰ Link expires: 24 hours",
+            response_text,
             reply_markup=keyboard
         )
         
@@ -202,18 +269,59 @@ async def download_file_handler(client, message: Message):
             ExpiresIn=86400
         )
         
-        # Create keyboard with download option
-        keyboard = create_download_keyboard(presigned_url)
+        # Generate player URL if supported
+        player_url = generate_player_url(file_name, presigned_url)
+        
+        # Create keyboard with options
+        keyboard = create_download_keyboard(presigned_url, player_url)
+        
+        response_text = f"📥 Download ready for: {file_name}\n⏰ Link expires: 24 hours"
+        
+        if player_url:
+            response_text += f"\n\n🎬 Web Player: {player_url}"
         
         await status_message.edit_text(
-            f"📥 Download ready for: {file_name}\n\n"
-            f"⏰ Link expires: 24 hours",
+            response_text,
             reply_markup=keyboard
         )
 
     except Exception as e:
         logger.error(f"Download error: {e}")
         await status_message.edit_text(f"Error: {str(e)}")
+
+# -----------------------------
+# Player Command Handler
+# -----------------------------
+@app.on_message(filters.command("play"))
+async def play_file(client, message: Message):
+    try:
+        if len(message.command) < 2:
+            await message.reply_text("Please specify a filename. Usage: /play filename")
+            return
+            
+        filename = " ".join(message.command[1:])
+        user_folder = get_user_folder(message.from_user.id)
+        user_file_name = f"{user_folder}/{filename}"
+        
+        # Generate a presigned URL
+        presigned_url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': WASABI_BUCKET, 'Key': user_file_name},
+            ExpiresIn=86400
+        )
+        
+        player_url = generate_player_url(filename, presigned_url)
+        
+        if player_url:
+            await message.reply_text(
+                f"Player link for {filename}:\n\n{player_url}\n\n"
+                "This link will expire in 24 hours."
+            )
+        else:
+            await message.reply_text("This file type doesn't support web playback.")
+        
+    except Exception as e:
+        await message.reply_text(f"File not found or error generating player link: {str(e)}")
 
 @app.on_message(filters.command("list"))
 async def list_files(client, message: Message):
@@ -262,6 +370,12 @@ async def delete_file(client, message: Message):
         logger.error(f"Delete error: {e}")
         await message.reply_text(f"Error: {str(e)}")
 
+# -----------------------------
+# Flask Server Startup
+# -----------------------------
+print("Starting Flask server on port 8000...")
+Thread(target=run_flask, daemon=True).start()
+
 if __name__ == "__main__":
-    print("Starting Wasabi Storage Bot...")
+    print("Starting Wasabi Storage Bot with Web Player...")
     app.run()
