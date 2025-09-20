@@ -8,9 +8,14 @@ from threading import Thread
 from flask import Flask, render_template
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.errors import FloodWait
 from dotenv import load_dotenv
 from urllib.parse import quote
 import logging
+import math
+from collections import defaultdict
+from datetime import datetime, timedelta
+import botocore
 
 # Set up logging
 logging.basicConfig(
@@ -31,6 +36,7 @@ WASABI_SECRET_KEY = os.getenv("WASABI_SECRET_KEY")
 WASABI_BUCKET = os.getenv("WASABI_BUCKET")
 WASABI_REGION = os.getenv("WASABI_REGION", "us-east-1")
 RENDER_URL = os.getenv("RENDER_URL", "http://localhost:8000")
+MAX_FILE_SIZE = 2000 * 1024 * 1024  # 2GB
 
 # Validate environment variables
 missing_vars = []
@@ -116,10 +122,10 @@ def about():
     return render_template("about.html")
 
 def run_flask():
-    flask_app.run(host="0.0.0.0", port=8000)
+    flask_app.run(host="0.0.0.0", port=8000, debug=False)
 
 # -----------------------------
-# Media Type Detection
+# Helper Functions
 # -----------------------------
 MEDIA_EXTENSIONS = {
     'video': ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v'],
@@ -143,7 +149,6 @@ def generate_player_url(filename, presigned_url):
         return f"{RENDER_URL}/player/{file_type}/{encoded_url}"
     return None
 
-# Helper functions
 def humanbytes(size):
     """Convert bytes to human readable format"""
     if not size:
@@ -178,9 +183,48 @@ def create_download_keyboard(presigned_url, player_url=None):
     
     return InlineKeyboardMarkup(keyboard)
 
-# Bot handlers
+def create_progress_bar(percentage, length=20):
+    """Create a visual progress bar"""
+    filled = int(length * percentage / 100)
+    empty = length - filled
+    return '█' * filled + '○' * empty
+
+def format_eta(seconds):
+    """Format seconds into human readable ETA"""
+    if seconds <= 0:
+        return "00:00"
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours > 0:
+        return f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
+    return f"{int(minutes):02d}:{int(seconds):02d}"
+
+def format_elapsed(seconds):
+    """Format elapsed time"""
+    return f"{int(seconds // 60):02d}:{int(seconds % 60):02d}"
+
+# Rate limiting
+user_requests = defaultdict(list)
+
+def is_rate_limited(user_id, limit=5, period=60):
+    now = datetime.now()
+    user_requests[user_id] = [req_time for req_time in user_requests[user_id] if now - req_time < timedelta(seconds=period)]
+    
+    if len(user_requests[user_id]) >= limit:
+        return True
+    
+    user_requests[user_id].append(now)
+    return False
+
+# -----------------------------
+# Bot Handlers
+# -----------------------------
 @app.on_message(filters.command("start"))
 async def start_command(client, message: Message):
+    if is_rate_limited(message.from_user.id):
+        await message.reply_text("Too many requests. Please try again in a minute.")
+        return
+        
     await message.reply_text(
         "🚀 Cloud Storage Bot with Web Player\n\n"
         "Send me any file to upload to Wasabi storage\n"
@@ -188,22 +232,91 @@ async def start_command(client, message: Message):
         "Use /play <filename> to get web player links\n"
         "Use /list to see your files\n"
         "Use /delete <filename> to remove files"
+        "<b>⚡ Extreme Performance Features:</b>\n"
+                "• 2GB file size support\n"
+                "• Real-time speed monitoring with smoothing\n"
+                "• Memory optimization for large files\n"
+                "• TCP Keepalive for stable connections\n\n"
+                "<b>💎 Owner:</b> Mraprguild\n"
+                "<b>📧 Email:</b> mraprguild@gmail.com\n"
+                "<b>📱 Telegram:</b> @Sathishkumar33",
     )
 
 @app.on_message(filters.document | filters.video | filters.audio | filters.photo)
 async def upload_file_handler(client, message: Message):
+    if is_rate_limited(message.from_user.id):
+        await message.reply_text("Too many requests. Please try again in a minute.")
+        return
+        
     media = message.document or message.video or message.audio or message.photo
     if not media:
         await message.reply_text("Unsupported file type")
         return
 
-    status_message = await message.reply_text("Downloading file...")
+    # Get file size
+    file_size = media.file_size if hasattr(media, 'file_size') else 0
     
+    # Check file size limit
+    if file_size > MAX_FILE_SIZE:
+        await message.reply_text(f"File too large. Maximum size is {humanbytes(MAX_FILE_SIZE)}")
+        return
+
+    status_message = await message.reply_text("📥 Downloading...\n[○○○○○○○○○○○○] 0.0%\nProcessed: 0.00B of 0000MB\nSpeed: 0.00B/s | ETA: -\nElapsed: 00s\nUpload: Telegram\nDownload: Wasabi")
+
+    download_start_time = time.time()
+    last_update_time = time.time()
+    processed_bytes = 0
+    last_processed_bytes = 0
+    start_time = time.time()
+
+    async def progress_callback(current, total):
+        nonlocal processed_bytes, last_update_time, last_processed_bytes
+        processed_bytes = current
+        current_time = time.time()
+        
+        # Update progress every 1 second to avoid flooding
+        if current_time - last_update_time >= 1:
+            percentage = (current / total) * 100
+            elapsed_time = current_time - start_time
+            
+            # Calculate speed
+            speed = (current - last_processed_bytes) / (current_time - last_update_time)
+            
+            # Calculate ETA
+            if speed > 0:
+                eta = (total - current) / speed
+            else:
+                eta = 0
+            
+            # Format progress message
+            progress_bar = create_progress_bar(percentage)
+            progress_text = (
+                f"📥 Downloading...\n"
+                f"[{progress_bar}] {percentage:.1f}%\n"
+                f"Processed: {humanbytes(current)} of {humanbytes(total)}\n"
+                f"Speed: {humanbytes(speed)}/s | ETA: {format_eta(eta)}\n"
+                f"Elapsed: {format_elapsed(elapsed_time)}\n"
+                f"Upload: Telegram\n"
+                f"Download: Wasabi"
+            )
+            
+            try:
+                await status_message.edit_text(progress_text)
+                last_update_time = current_time
+                last_processed_bytes = current
+            except FloodWait as e:
+                await asyncio.sleep(e.value)
+            except Exception:
+                pass  # Ignore other errors during progress updates
+
     try:
-        # Download file
-        file_path = await message.download()
+        # Download file with progress callback
+        file_path = await message.download(progress=progress_callback)
         file_name = sanitize_filename(os.path.basename(file_path))
         user_file_name = f"{get_user_folder(message.from_user.id)}/{file_name}"
+        
+        # Update status to uploading
+        await status_message.edit_text("📤 Uploading to Wasabi...")
         
         # Upload to Wasabi
         await asyncio.to_thread(
@@ -226,11 +339,18 @@ async def upload_file_handler(client, message: Message):
         # Create keyboard with options
         keyboard = create_download_keyboard(presigned_url, player_url)
         
-        file_size = media.file_size if hasattr(media, 'file_size') else 0
+        # Get final file size
         if message.photo:
             file_size = os.path.getsize(file_path)
         
-        response_text = f"✅ Upload complete!\n\n📁 File: {file_name}\n📦 Size: {humanbytes(file_size)}\n⏰ Link expires: 24 hours"
+        total_time = time.time() - start_time
+        response_text = (
+            f"✅ Upload complete!\n\n"
+            f"📁 File: {file_name}\n"
+            f"📦 Size: {humanbytes(file_size)}\n"
+            f"⏱️ Time: {format_elapsed(total_time)}\n"
+            f"⏰ Link expires: 24 hours"
+        )
         
         if player_url:
             response_text += f"\n\n🎬 Web Player: {player_url}"
@@ -242,13 +362,17 @@ async def upload_file_handler(client, message: Message):
         
     except Exception as e:
         logger.error(f"Upload error: {e}")
-        await status_message.edit_text(f"Error: {str(e)}")
+        await status_message.edit_text(f"❌ Error: {str(e)}")
     finally:
         if 'file_path' in locals() and os.path.exists(file_path):
             os.remove(file_path)
 
 @app.on_message(filters.command("download"))
 async def download_file_handler(client, message: Message):
+    if is_rate_limited(message.from_user.id):
+        await message.reply_text("Too many requests. Please try again in a minute.")
+        return
+        
     if len(message.command) < 2:
         await message.reply_text("Usage: /download <filename>")
         return
@@ -285,15 +409,22 @@ async def download_file_handler(client, message: Message):
             reply_markup=keyboard
         )
 
+    except botocore.exceptions.ClientError as e:
+        error_code = e.response['Error']['Code']
+        if error_code == '404':
+            await status_message.edit_text("File not found.")
+        else:
+            await status_message.edit_text(f"S3 Error: {str(e)}")
     except Exception as e:
         logger.error(f"Download error: {e}")
         await status_message.edit_text(f"Error: {str(e)}")
 
-# -----------------------------
-# Player Command Handler
-# -----------------------------
 @app.on_message(filters.command("play"))
 async def play_file(client, message: Message):
+    if is_rate_limited(message.from_user.id):
+        await message.reply_text("Too many requests. Please try again in a minute.")
+        return
+        
     try:
         if len(message.command) < 2:
             await message.reply_text("Please specify a filename. Usage: /play filename")
@@ -325,6 +456,10 @@ async def play_file(client, message: Message):
 
 @app.on_message(filters.command("list"))
 async def list_files(client, message: Message):
+    if is_rate_limited(message.from_user.id):
+        await message.reply_text("Too many requests. Please try again in a minute.")
+        return
+        
     try:
         user_prefix = get_user_folder(message.from_user.id) + "/"
         response = s3_client.list_objects_v2(
@@ -350,6 +485,10 @@ async def list_files(client, message: Message):
 
 @app.on_message(filters.command("delete"))
 async def delete_file(client, message: Message):
+    if is_rate_limited(message.from_user.id):
+        await message.reply_text("Too many requests. Please try again in a minute.")
+        return
+        
     if len(message.command) < 2:
         await message.reply_text("Usage: /delete <filename>")
         return
