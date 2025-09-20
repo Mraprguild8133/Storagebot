@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cloud Player</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    
+    body {
+      background: linear-gradient(135deg, rgba(26, 42, 108, 0.85), rgba(42, 58, 124, 0.85), rgba(58, 74, 140, 0.85)), 
+                  url('https://images.unsplash.com/photo-1470225620780-dba8ba36b745?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1740&q=80') center/cover no-repeat;
+      color: #fff;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 20px;
+      transition: background-image 0.5s ease;
+    }
+    
+    .container {
+      width: 100%;
+      max-width: 900px;
+      background: rgba(25, 25, 35, 0.85);
+      border-radius: 15px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      overflow: hidden;
+      backdrop-filter: blur(10px);
+    }
+    
+    header {
+      padding: 20px;
+      text-align: center;
+      background: rgba(15, 15, 25, 0.7);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    h1 {
+      font-size: 2.2rem;
+      margin-bottom: 5px;
+      background: linear-gradient(to right, #4facfe, #00f2fe);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      text-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+    }
+    
+    .subtitle {
+      color: #a0a0c0;
+      font-size: 1rem;
+      margin-bottom: 10px;
+    }
+    
+    .player-container {
+      padding: 25px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    
+    .media-display {
+      width: 100%;
+      max-width: 100%;
+      margin-bottom: 25px;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 5px 20px rgba(0, 0, 0, 0.4);
+      background: #000;
+      position: relative;
+    }
+    
+    video, audio, img {
+      width: 100%;
+      display: block;
+      max-height: 70vh;
+    }
+    
+    .custom-audio-player {
+      width: 100%;
+      padding: 15px;
+      background: #1a1a2a;
+      border-radius: 10px;
+      position: relative;
+    }
+    
+    .custom-video-controls {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 15px;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+    }
+    
+    .media-display:hover .custom-video-controls {
+      opacity: 1;
+    }
+    
+    .control-btn {
+      background: rgba(255, 255, 255, 0.2);
+      border: none;
+      color: white;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    
+    .control-btn:hover {
+      background: rgba(255, 255, 255, 0.3);
+      transform: scale(1.1);
+    }
+    
+    .control-btn i {
+      font-size: 16px;
+    }
+    
+    .skip-btn {
+      background: transparent;
+      border: none;
+      color: white;
+      padding: 8px 12px;
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      font-weight: 600;
+    }
+    
+    .skip-btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+    }
+    
+    .media-info {
+      padding: 12px 15px;
+      background: rgba(30, 30, 45, 0.7);
+      border-radius: 8px;
+      margin-bottom: 20px;
+      width: 100%;
+      font-size: 0.9rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    
+    .media-type {
+      background: #4facfe;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: bold;
+    }
+    
+    .controls {
+      display: flex;
+      gap: 12px;
+      margin-top: 15px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    
+    .btn {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 20px;
+      background: linear-gradient(to right, #4facfe, #00f2fe);
+      color: white;
+      text-decoration: none;
+      border-radius: 50px;
+      font-weight: 600;
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+      cursor: pointer;
+      border: none;
+    }
+    
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 15px rgba(0, 0, 0, 0.4);
+      background: linear-gradient(to right, #3a9cec, #00ddee);
+    }
+    
+    .btn i {
+      font-size: 1rem;
+    }
+    
+    .loading {
+      padding: 40px;
+      text-align: center;
+      color: #a0a0c0;
+    }
+    
+    .loading i {
+      font-size: 2rem;
+      margin-bottom: 15px;
+      color: #4facfe;
+    }
+    
+    .error {
+      padding: 30px;
+      text-align: center;
+      background: rgba(200, 60, 60, 0.2);
+      border-radius: 10px;
+      margin: 20px 0;
+      border: 1px solid rgba(255, 100, 100, 0.3);
+    }
+    
+    .error i {
+      font-size: 2.5rem;
+      margin-bottom: 15px;
+      color: #ff6b6b;
+    }
+    
+    .background-selector {
+      margin-top: 15px;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    
+    .background-label {
+      font-size: 0.9rem;
+      color: #a0a0c0;
+    }
+    
+    .background-options {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    
+    .bg-option {
+      width: 60px;
+      height: 60px;
+      border-radius: 8px;
+      overflow: hidden;
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: all 0.2s ease;
+    }
+    
+    .bg-option:hover {
+      transform: scale(1.05);
+    }
+    
+    .bg-option.active {
+      border-color: #4facfe;
+      box-shadow: 0 0 10px rgba(79, 172, 254, 0.5);
+    }
+    
+    .bg-option img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+    
+    footer {
+      text-align: center;
+      padding: 20px;
+      color: #a0a0c0;
+      font-size: 0.9rem;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    /* Player options modal */
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.7);
+      z-index: 1000;
+      justify-content: center;
+      align-items: center;
+    }
+    
+    .modal-content {
+      background: rgba(35, 35, 50, 0.95);
+      padding: 25px;
+      border-radius: 15px;
+      width: 90%;
+      max-width: 500px;
+      box-shadow: 0 5px 25px rgba(0, 0, 0, 0.5);
+      backdrop-filter: blur(10px);
+    }
+    
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    
+    .modal-title {
+      font-size: 1.5rem;
+      background: linear-gradient(to right, #4facfe, #00f2fe);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    
+    .close-modal {
+      background: none;
+      border: none;
+      color: #a0a0c0;
+      font-size: 1.5rem;
+      cursor: pointer;
+    }
+    
+    .player-options {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 15px;
+      margin: 20px 0;
+    }
+    
+    .player-option {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 15px;
+      background: rgba(25, 25, 35, 0.8);
+      border-radius: 10px;
+      transition: all 0.3s ease;
+      cursor: pointer;
+    }
+    
+    .player-option:hover {
+      transform: translateY(-3px);
+      background: rgba(35, 35, 50, 0.9);
+      box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+    }
+    
+    .player-icon {
+      font-size: 2rem;
+      margin-bottom: 10px;
+    }
+    
+    .player-name {
+      font-size: 0.9rem;
+      text-align: center;
+    }
+    
+    .download-info {
+      margin-top: 20px;
+      padding: 15px;
+      background: rgba(30, 30, 45, 0.7);
+      border-radius: 10px;
+      font-size: 0.9rem;
+    }
+    
+    @media (max-width: 600px) {
+      .container {
+        border-radius: 10px;
+      }
+      
+      h1 {
+        font-size: 1.8rem;
+      }
+      
+      .player-container {
+        padding: 15px;
+      }
+      
+      .controls {
+        flex-direction: column;
+        width: 100%;
+      }
+      
+      .btn {
+        width: 100%;
+        justify-content: center;
+      }
+      
+      .player-options {
+        grid-template-columns: 1fr 1fr;
+      }
+      
+      .background-options {
+        justify-content: center;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Cloud Player</h1>
+      <div class="subtitle">Stream your media files seamlessly</div>
+    </header>
+    
+    <div class="player-container">
+      <div class="media-info">
+        <div class="media-url">Content from secure source</div>
+        <div class="media-type">Loading...</div>
+      </div>
+      
+      <div id="player" class="media-display">
+        <div class="loading">
+          <i class="fas fa-spinner fa-spin"></i>
+          <p>Loading your media content...</p>
+        </div>
+      </div>
+      
+      <div class="controls">
+        <a id="openBtn" target="_blank" class="btn">
+          <i class="fas fa-external-link-alt"></i>Open Original
+        </a>
+        <a id="downloadBtn" download class="btn">
+          <i class="fas fa-download"></i>Download
+        </a>
+        <button id="playerOptionsBtn" class="btn">
+          <i class="fas fa-play-circle"></i>Open in Player
+        </button>
+        <a id="newContentBtn" class="btn">
+          <i class="fas fa-plus"></i>New Content
+        </a>
+      </div>
+      
+      <div class="background-selector">
+        <div class="background-label">Change Background:</div>
+        <div class="background-options">
+          <div class="bg-option active" data-bg="https://images.unsplash.com/photo-1470225620780-dba8ba36b745?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1740&q=80">
+            <img src="https://images.unsplash.com/photo-1470225620780-dba8ba36b745?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1740&q=80" alt="Concert">
+          </div>
+          <div class="bg-option" data-bg="https://images.unsplash.com/photo-1514525253161-7a46d19cd819?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1548&q=80">
+            <img src="https://images.unsplash.com/photo-1514525253161-7a46d19cd819?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1548&q=80" alt="Music">
+          </div>
+          <div class="bg-option" data-bg="https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1740&q=80">
+            <img src="https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1740&q=80" alt="DJ">
+          </div>
+          <div class="bg-option" data-bg="https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1740&q=80">
+            <img src="https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1740&q=80" alt="Headphones">
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <footer>
+      <p>Cloud Player &copy; 2023 | Secure Media Streaming</p>
+    </footer>
+  </div>
+
+  <!-- Player Options Modal -->
+  <div id="playerModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title">Open With External Player</h2>
+        <button class="close-modal">&times;</button>
+      </div>
+      <p>Select your preferred media player to open this content:</p>
+      
+      <div class="player-options">
+        <div class="player-option" data-player="vlc">
+          <div class="player-icon">
+            <i class="fas fa-play-circle"></i>
+          </div>
+          <div class="player-name">VLC Player</div>
+        </div>
+        
+        <div class="player-option" data-player="mx">
+          <div class="player-icon">
+            <i class="fas fa-play-circle"></i>
+          </div>
+          <div class="player-name">MX Player</div>
+        </div>
+        
+        <div class="player-option" data-player="browser">
+          <div class="player-icon">
+            <i class="fas fa-window-restore"></i>
+          </div>
+          <div class="player-name">Browser Player</div>
+        </div>
+        
+        <div class="player-option" data-player="download">
+          <div class="player-icon">
+            <i class="fas fa-download"></i>
+          </div>
+          <div class="player-name">Download</div>
+        </div>
+      </div>
+      
+      <div class="download-info">
+        <p><strong>Note:</strong> For external players to work, you need to have the app installed on your device.</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let mediaUrl = '';
+    let mediaType = '';
+    let mediaElement = null;
+    
+    function decodeBase64Url(encoded) {
+      try {
+        let pad = encoded.length % 4;
+        if (pad) encoded += "=".repeat(4 - pad);
+        return atob(encoded.replace(/-/g, '+').replace(/_/g, '/'));
+      } catch { return null; }
+    }
+    
+    function displayMedia() {
+      const parts = window.location.pathname.split("/");
+      const type = parts[2];
+      const encoded = parts[3];
+      const url = decodeBase64Url(encoded);
+      
+      const playerEl = document.getElementById("player");
+      const mediaTypeEl = document.querySelector(".media-type");
+      const openBtn = document.getElementById("openBtn");
+      const downloadBtn = document.getElementById("downloadBtn");
+      
+      if (!url) {
+        playerEl.innerHTML = `
+          <div class="error">
+            <i class="fas fa-exclamation-circle"></i>
+            <h2>Invalid or Expired Link</h2>
+            <p>The media link is invalid or may have expired.</p>
+          </div>
+        `;
+        mediaTypeEl.textContent = "Invalid";
+        openBtn.style.display = "none";
+        downloadBtn.style.display = "none";
+        return;
+      }
+      
+      // Store the URL and type for later use
+      mediaUrl = url;
+      mediaType = type;
+      
+      // Set media type badge
+      mediaTypeEl.textContent = type.charAt(0).toUpperCase() + type.slice(1);
+      
+      // Set button URLs
+      openBtn.href = url;
+      downloadBtn.href = url;
+      
+      // Display the appropriate media player
+      let html = "";
+      if (type === "video") {
+        html = `
+          <video id="videoElement" controls autoplay>
+            <source src="${url}" type="video/mp4">
+            Your browser does not support the video tag.
+          </video>
+          <div class="custom-video-controls">
+            <button class="skip-btn" id="backward10Btn">
+              <i class="fas fa-backward"></i> 10s
+            </button>
+            <button class="control-btn" id="playPauseBtn">
+              <i class="fas fa-pause"></i>
+            </button>
+            <button class="skip-btn" id="forward10Btn">
+              10s <i class="fas fa-forward"></i>
+            </button>
+          </div>
+        `;
+      } else if (type === "audio") {
+        html = `
+          <div class="custom-audio-player">
+            <audio id="audioElement" controls autoplay>
+              <source src="${url}" type="audio/mpeg">
+              Your browser does not support the audio element.
+            </audio>
+            <div style="display: flex; gap: 10px; margin-top: 10px; justify-content: center;">
+              <button class="skip-btn" id="backward10Btn">
+                <i class="fas fa-backward"></i> 10s
+              </button>
+              <button class="skip-btn" id="forward10Btn">
+                10s <i class="fas fa-forward"></i>
+              </button>
+            </div>
+          </div>
+        `;
+      } else if (type === "image") {
+        html = `<img src="${url}" alt="Cloud Image">`;
+      } else {
+        html = `
+          <div class="error">
+            <i class="fas fa-times-circle"></i>
+            <h2>Unsupported Media Type</h2>
+            <p>Type: ${type} is not supported.</p>
+          </div>
+        `;
+      }
+      
+      // Add a small delay to simulate loading (for demo purposes)
+      setTimeout(() => {
+        playerEl.innerHTML = html;
+        
+        // Set up media controls if it's video or audio
+        if (type === "video" || type === "audio") {
+          mediaElement = document.getElementById(type + "Element");
+          setupMediaControls();
+        }
+      }, 1000);
+    }
+    
+    function setupMediaControls() {
+      // Backward 10 seconds
+      const backward10Btn = document.getElementById("backward10Btn");
+      if (backward10Btn) {
+        backward10Btn.addEventListener("click", () => {
+          if (mediaElement) {
+            mediaElement.currentTime = Math.max(0, mediaElement.currentTime - 10);
+          }
+        });
+      }
+      
+      // Forward 10 seconds
+      const forward10Btn = document.getElementById("forward10Btn");
+      if (forward10Btn) {
+        forward10Btn.addEventListener("click", () => {
+          if (mediaElement) {
+            mediaElement.currentTime = Math.min(mediaElement.duration, mediaElement.currentTime + 10);
+          }
+        });
+      }
+      
+      // Play/Pause button for video
+      const playPauseBtn = document.getElementById("playPauseBtn");
+      if (playPauseBtn) {
+        playPauseBtn.addEventListener("click", () => {
+          if (mediaElement.paused) {
+            mediaElement.play();
+            playPauseBtn.innerHTML = '<i class="fas fa-pause"></i>';
+          } else {
+            mediaElement.pause();
+            playPauseBtn.innerHTML = '<i class="fas fa-play"></i>';
+          }
+        });
+        
+        // Update play/pause button based on video state
+        mediaElement.addEventListener("play", () => {
+          playPauseBtn.innerHTML = '<i class="fas fa-pause"></i>';
+        });
+        
+        mediaElement.addEventListener("pause", () => {
+          playPauseBtn.innerHTML = '<i class="fas fa-play"></i>';
+        });
+      }
+    }
+    
+    // Initialize the player when page loads
+    document.addEventListener("DOMContentLoaded", function() {
+      displayMedia();
+      
+      // Set up player options modal
+      const modal = document.getElementById('playerModal');
+      const openModalBtn = document.getElementById('playerOptionsBtn');
+      const closeModalBtn = document.querySelector('.close-modal');
+      const playerOptions = document.querySelectorAll('.player-option');
+      
+      // Open modal when button is clicked
+      openModalBtn.addEventListener('click', function() {
+        modal.style.display = 'flex';
+      });
+      
+      // Close modal when X is clicked
+      closeModalBtn.addEventListener('click', function() {
+        modal.style.display = 'none';
+      });
+      
+      // Close modal when clicking outside content
+      window.addEventListener('click', function(event) {
+        if (event.target === modal) {
+          modal.style.display = 'none';
+        }
+      });
+      
+      // Handle player selection
+      playerOptions.forEach(option => {
+        option.addEventListener('click', function() {
+          const player = this.getAttribute('data-player');
+          handlePlayerSelection(player);
+          modal.style.display = 'none';
+        });
+      });
+      
+      // Set up background selector
+      const bgOptions = document.querySelectorAll('.bg-option');
+      bgOptions.forEach(option => {
+        option.addEventListener('click', function() {
+          const bgUrl = this.getAttribute('data-bg');
+          
+          // Update active state
+          bgOptions.forEach(opt => opt.classList.remove('active'));
+          this.classList.add('active');
+          
+          // Change background
+          document.body.style.backgroundImage = `linear-gradient(135deg, rgba(26, 42, 108, 0.85), rgba(42, 58, 124, 0.85), rgba(58, 74, 140, 0.85)), url('${bgUrl}')`;
+        });
+      });
+    });
+    
+    // Handle player selection
+    function handlePlayerSelection(player) {
+      if (!mediaUrl) return;
+      
+      switch(player) {
+        case 'vlc':
+          openInVLCPlayer(mediaUrl);
+          break;
+        case 'mx':
+          openInMXPlayer(mediaUrl);
+          break;
+        case 'browser':
+          // Already playing in browser, do nothing
+          break;
+        case 'download':
+          downloadMedia(mediaUrl);
+          break;
+      }
+    }
+    
+    // Open in VLC Player
+    function openInVLCPlayer(url) {
+      // VLC uses a custom URL scheme for streaming
+      const vlcUrl = 'vlc://' + url;
+      window.location.href = vlcUrl;
+      
+      // Fallback in case VLC is not installed
+      setTimeout(function() {
+        if (!document.webkitHidden && !document.hidden) {
+          alert('VLC Player not found. Please install VLC or try another player.');
+        }
+      }, 1000);
+    }
+    
+    // Open in MX Player
+    function openInMXPlayer(url) {
+      // MX Player uses a custom intent system
+      const mxUrl = `intent:${url}#Intent;package=com.mxtech.videoplayer.ad;S.title=Cloud%20Player;end`;
+      window.location.href = mxUrl;
+      
+      // Fallback in case MX Player is not installed
+      setTimeout(function() {
+        if (!document.webkitHidden && !document.hidden) {
+          alert('MX Player not found. Please install MX Player or try another player.');
+        }
+      }, 1000);
+    }
+    
+    // Download media
+    function downloadMedia(url) {
+      const downloadLink = document.createElement('a');
+      downloadLink.href = url;
+      downloadLink.download = 'media.' + mediaType;
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      document.body.removeChild(downloadLink);
+    }
+    
+    // Add event listener for the "New Content" button
+    document.getElementById("newContentBtn").addEventListener("click", function() {
+      // For demo purposes, we'll just reload with a sample URL
+      // In a real app, this would open a file selector or similar
+      alert("In a complete implementation, this would allow you to upload or select new content.");
+    });
+  </script>
+</body>
+</html>
