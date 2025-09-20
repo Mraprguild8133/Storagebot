@@ -1,645 +1,367 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cloud Player</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        * {
-            box-sizing: border-box;
-            margin: 0;
-            padding: 0;
-        }
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cloud Player V2</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    :root {
+      --primary-color: #4facfe;
+      --secondary-color: #00f2fe;
+      --background-start: #1a2a6c;
+      --background-end: #3a4a8c;
+      --container-bg: rgba(25, 25, 35, 0.9);
+      --header-bg: rgba(15, 15, 25, 0.7);
+      --text-light: #fff;
+      --text-muted: #a0a0c0;
+      --purple-gradient: linear-gradient(to right, #6a11cb, #2575fc);
+      --green-gradient: linear-gradient(to right, #11998e, #38ef7d);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    
+    body {
+      background: linear-gradient(135deg, var(--background-start), var(--background-end));
+      color: var(--text-light);
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    
+    .container {
+      width: 100%;
+      max-width: 900px;
+      background: var(--container-bg);
+      border-radius: 15px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      overflow: hidden;
+      backdrop-filter: blur(10px);
+      animation: containerFade 0.5s ease-out;
+    }
+    
+    @keyframes containerFade {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    
+    header {
+      padding: 20px;
+      text-align: center;
+      background: var(--header-bg);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    h1 {
+      font-size: 2.2rem;
+      margin-bottom: 5px;
+      background: linear-gradient(to right, var(--primary-color), var(--secondary-color));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      text-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+    }
+    
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 1rem;
+    }
+    
+    .player-container {
+      padding: 25px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    
+    .media-display {
+      width: 100%;
+      margin-bottom: 25px;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 5px 20px rgba(0, 0, 0, 0.4);
+      background: #000;
+      position: relative;
+      min-height: 200px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    video, audio, img {
+      width: 100%;
+      display: block;
+      max-height: 70vh;
+      animation: mediaFadeIn 0.5s ease-out;
+    }
+
+    @keyframes mediaFadeIn {
+      from { opacity: 0; transform: scale(0.95); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    
+    .custom-audio-player {
+      width: 100%;
+      padding: 15px;
+      background: #1a1a2a;
+      border-radius: 10px;
+    }
+    
+    .file-details {
+      width: 100%;
+      background: rgba(30, 30, 45, 0.7);
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 25px;
+    }
+
+    .file-details h2 {
+      font-size: 1.5rem;
+      margin-bottom: 15px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      padding-bottom: 10px;
+    }
+
+    .detail-item {
+      display: flex;
+      align-items: center;
+      margin-bottom: 12px;
+      font-size: 0.95rem;
+    }
+
+    .detail-item i {
+      font-size: 1.1rem;
+      width: 30px;
+      text-align: center;
+      margin-right: 15px;
+      color: var(--primary-color);
+    }
+    
+    .controls {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      width: 100%;
+    }
+
+    .control-row {
+        display: flex;
+        gap: 12px;
+    }
+    
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 14px 20px;
+      color: white;
+      text-decoration: none;
+      border-radius: 8px;
+      font-weight: 600;
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+      border: none;
+      cursor: pointer;
+      flex: 1;
+      text-align: center;
+    }
+    
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 15px rgba(0, 0, 0, 0.4);
+    }
+    
+    .btn:active { transform: translateY(0); }
+    .btn i { font-size: 1rem; }
+
+    .btn-blue { background: #2980b9; }
+    .btn-blue:hover { background: #3498db; }
+
+    .btn-purple { background: var(--purple-gradient); }
+    .btn-purple:hover { opacity: 0.9; }
+
+    .btn-telegram { background: #3498db; }
+    .btn-telegram:hover { background: #5dade2; }
+    
+    .btn-green { background: var(--green-gradient); }
+    .btn-green:hover { opacity: 0.9; }
+    
+    .loading {
+      padding: 40px; text-align: center; color: var(--text-muted);
+    }
+    
+    .loading i {
+      font-size: 2rem;
+      margin-bottom: 15px;
+      color: var(--primary-color);
+      animation: spin 1.5s linear infinite;
+    }
+    
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    
+    .error {
+      padding: 30px; text-align: center; background: rgba(200, 60, 60, 0.2);
+      border-radius: 10px; margin: 20px 0; border: 1px solid rgba(255, 100, 100, 0.3);
+    }
+    
+    .error i { font-size: 2.5rem; margin-bottom: 15px; color: #ff6b6b; }
         
-        body {
-            background: linear-gradient(135deg, #1a2a6c, #2a3a7c, #3a4a8c);
-            color: #fff;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            padding: 20px;
-        }
-        
-        .container {
-            width: 100%;
-            max-width: 900px;
-            background: rgba(25, 25, 35, 0.9);
-            border-radius: 15px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-            overflow: hidden;
-            backdrop-filter: blur(10px);
-            animation: containerFade 0.5s ease-out;
-        }
-        
-        @keyframes containerFade {
-            from { opacity: 0; transform: translateY(20px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        
-        header {
-            padding: 20px;
-            text-align: center;
-            background: rgba(15, 15, 25, 0.7);
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        }
-        
-        h1 {
-            font-size: 2.2rem;
-            margin-bottom: 5px;
-            background: linear-gradient(to right, #4facfe, #00f2fe);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            text-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
-        }
-        
-        .subtitle {
-            color: #a0a0c0;
-            font-size: 1rem;
-            margin-bottom: 10px;
-        }
-        
-        .player-container {
-            padding: 25px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-        }
-        
-        .media-display {
-            width: 100%;
-            max-width: 100%;
-            margin-bottom: 25px;
-            border-radius: 12px;
-            overflow: hidden;
-            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.4);
-            background: #000;
-            position: relative;
-            min-height: 200px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        
-        video, audio, img {
-            width: 100%;
-            display: block;
-            max-height: 70vh;
-        }
-        
-        .custom-audio-player {
-            width: 100%;
-            padding: 15px;
-            background: #1a1a2a;
-            border-radius: 10px;
-        }
-        
-        .media-info {
-            padding: 12px 15px;
-            background: rgba(30, 30, 45, 0.7);
-            border-radius: 8px;
-            margin-bottom: 20px;
-            width: 100%;
-            font-size: 0.9rem;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 10px;
-        }
-        
-        .media-url {
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-            max-width: 70%;
-        }
-        
-        .media-type {
-            background: linear-gradient(to right, #4facfe, #00f2fe);
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 0.8rem;
-            font-weight: bold;
-            flex-shrink: 0;
-        }
-        
-        .download-options {
-            width: 100%;
-            margin-bottom: 20px;
-        }
-        
-        .download-title {
-            font-size: 1.1rem;
-            margin-bottom: 15px;
-            color: #a0a0c0;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .download-title::before, .download-title::after {
-            content: "";
-            flex: 1;
-            height: 1px;
-            background: rgba(255, 255, 255, 0.1);
-        }
-        
-        .download-buttons {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            margin-bottom: 25px;
-        }
-        
-        .btn {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 12px 20px;
-            background: linear-gradient(to right, #4facfe, #00f2fe);
-            color: white;
-            text-decoration: none;
-            border-radius: 50px;
-            font-weight: 600;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
-            border: none;
-            cursor: pointer;
-            justify-content: center;
-            text-align: center;
-        }
-        
-        .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 15px rgba(0, 0, 0, 0.4);
-            background: linear-gradient(to right, #3a9cec, #00ddee);
-        }
-        
-        .btn:active {
-            transform: translateY(0);
-        }
-        
-        .btn i {
-            font-size: 1rem;
-        }
-        
-        .btn-secondary {
-            background: rgba(79, 172, 254, 0.2);
-            border: 1px solid #4facfe;
-        }
-        
-        .btn-secondary:hover {
-            background: rgba(79, 172, 254, 0.3);
-        }
-        
-        .btn-tg {
-            background: linear-gradient(to right, #2aabee, #229ed9);
-        }
-        
-        .btn-tg:hover {
-            background: linear-gradient(to right, #229ed9, #1e87c1);
-        }
-        
-        .btn-highspeed {
-            background: linear-gradient(to right, #00c6ff, #0072ff);
-        }
-        
-        .btn-highspeed:hover {
-            background: linear-gradient(to right, #009bd9, #0062cc);
-        }
-        
-        .verify-notice {
-            font-size: 0.8rem;
-            color: #a0a0c0;
-            text-align: center;
-            margin-top: 5px;
-        }
-        
-        .player-buttons {
-            display: flex;
-            gap: 12px;
-            margin-top: 15px;
-            flex-wrap: wrap;
-            justify-content: center;
-            width: 100%;
-        }
-        
-        .loading {
-            padding: 40px;
-            text-align: center;
-            color: #a0a0c0;
-        }
-        
-        .loading i {
-            font-size: 2rem;
-            margin-bottom: 15px;
-            color: #4facfe;
-            animation: spin 1.5s linear infinite;
-        }
-        
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        
-        .error {
-            padding: 30px;
-            text-align: center;
-            background: rgba(200, 60, 60, 0.2);
-            border-radius: 10px;
-            margin: 20px 0;
-            border: 1px solid rgba(255, 100, 100, 0.3);
-        }
-        
-        .error i {
-            font-size: 2.5rem;
-            margin-bottom: 15px;
-            color: #ff6b6b;
-        }
-        
-        .file-input-container {
-            width: 100%;
-            margin-top: 20px;
-            display: none;
-        }
-        
-        .file-input-label {
-            display: block;
-            padding: 15px;
-            background: rgba(30, 30, 45, 0.7);
-            border: 2px dashed #4facfe;
-            border-radius: 8px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-        
-        .file-input-label:hover {
-            background: rgba(40, 40, 60, 0.7);
-            border-color: #00f2fe;
-        }
-        
-        .file-input-label i {
-            font-size: 2rem;
-            margin-bottom: 10px;
-            color: #4facfe;
-        }
-        
-        footer {
-            text-align: center;
-            padding: 20px;
-            color: #a0a0c0;
-            font-size: 0.9rem;
-            border-top: 1px solid rgba(255, 255, 255, 0.1);
-        }
-        
-        .progress-bar {
-            width: 100%;
-            height: 6px;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 3px;
-            overflow: hidden;
-            margin-top: 15px;
-        }
-        
-        .progress {
-            height: 100%;
-            background: linear-gradient(to right, #4facfe, #00f2fe);
-            width: 0%;
-            transition: width 0.3s ease;
-        }
-        
-        @media (max-width: 600px) {
-            .container {
-                border-radius: 10px;
-            }
-            
-            h1 {
-                font-size: 1.8rem;
-            }
-            
-            .player-container {
-                padding: 15px;
-            }
-            
-            .player-buttons {
-                flex-direction: column;
-            }
-            
-            .btn {
-                width: 100%;
-            }
-            
-            .download-buttons {
-                grid-template-columns: 1fr;
-            }
-            
-            .media-info {
-                flex-direction: column;
-                align-items: flex-start;
-            }
-            
-            .media-url {
-                max-width: 100%;
-            }
-        }
-        
-        /* Animation for media loading */
-        @keyframes mediaFadeIn {
-            from { opacity: 0; transform: scale(0.95); }
-            to { opacity: 1; transform: scale(1); }
-        }
-        
-        video, audio, img {
-            animation: mediaFadeIn 0.5s ease-out;
-        }
-    </style>
+    footer {
+      text-align: center; padding: 20px; color: var(--text-muted);
+      font-size: 0.9rem; border-top: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    @media (max-width: 600px) {
+      .container { border-radius: 10px; }
+      h1 { font-size: 1.8rem; }
+      .player-container { padding: 15px; }
+      .control-row { flex-direction: column; }
+    }
+  </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>Cloud Player</h1>
-            <div class="subtitle">Stream your media files seamlessly</div>
-        </header>
-        
-        <div class="player-container">
-            <div class="media-info">
-                <div class="media-url">[Toonworld4all] Naruto Shippuden - E261 [480p BD x264 Mu.mkv</div>
-                <div class="media-type">Video</div>
-            </div>
-            
-            <div id="player" class="media-display">
-                <div class="loading">
-                    <i class="fas fa-spinner"></i>
-                    <p>Loading your media content...</p>
-                </div>
-            </div>
-            
-            <div class="progress-bar">
-                <div class="progress" id="progressBar"></div>
-            </div>
-            
-            <div class="download-options">
-                <div class="download-title">Download Options</div>
-                <div class="download-buttons">
-                    <a href="#" class="btn btn-tg">
-                        <i class="fab fa-telegram"></i>Get as TG File
-                    </a>
-                    <div>
-                        <a href="#" class="btn btn-highspeed">
-                            <i class="fas fa-bolt"></i>High Speed Download
-                        </a>
-                        <div class="verify-notice">(Requires Verify)</div>
-                    </div>
-                    <a href="#" class="btn">
-                        <i class="fas fa-download"></i>Normal Speed Download
-                    </a>
-                </div>
-            </div>
-            
-            <div class="player-buttons">
-                <a id="openBtn" target="_blank" class="btn">
-                    <i class="fas fa-external-link-alt"></i>Open Original
-                </a>
-                <a id="downloadBtn" download class="btn">
-                    <i class="fas fa-download"></i>Download
-                </a>
-                <a id="newContentBtn" class="btn btn-secondary">
-                    <i class="fas fa-plus"></i>New Content
-                </a>
-            </div>
-            
-            <div class="file-input-container" id="fileInputContainer">
-                <label for="fileInput" class="file-input-label">
-                    <i class="fas fa-cloud-upload-alt"></i>
-                    <p>Click to browse or drag & drop your media file</p>
-                </label>
-                <input type="file" id="fileInput" accept="audio/*,video/*,image/*" style="display: none;">
-            </div>
+  <div class="container">
+    <header>
+      <h1>Cloud Player V2</h1>
+      <div class="subtitle">Your all-in-one media streaming solution</div>
+    </header>
+    
+    <div class="player-container">
+      <div id="player" class="media-display">
+        <div class="loading">
+          <i class="fas fa-spinner"></i>
+          <p>Loading your media content...</p>
         </div>
-        
-        <footer>
-            <p>Cloud Player &copy; 2023 | Secure Media Streaming</p>
-        </footer>
-    </div>
+      </div>
 
-    <script>
-        function decodeBase64Url(encoded) {
-            try {
-                let pad = encoded.length % 4;
-                if (pad) encoded += "=".repeat(4 - pad);
-                return atob(encoded.replace(/-/g, '+').replace(/_/g, '/'));
-            } catch { return null; }
-        }
-        
-        function displayMedia() {
-            const parts = window.location.pathname.split("/");
-            const type = parts[2];
-            const encoded = parts[3];
-            const url = decodeBase64Url(encoded);
-            
-            const playerEl = document.getElementById("player");
-            const mediaTypeEl = document.querySelector(".media-type");
-            const openBtn = document.getElementById("openBtn");
-            const downloadBtn = document.getElementById("downloadBtn");
-            const progressBar = document.getElementById("progressBar");
-            
-            if (!url) {
-                playerEl.innerHTML = `
-                    <div class="error">
-                        <i class="fas fa-exclamation-circle"></i>
-                        <h2>Invalid or Expired Link</h2>
-                        <p>The media link is invalid or may have expired.</p>
-                    </div>
-                `;
-                mediaTypeEl.textContent = "Invalid";
-                openBtn.style.display = "none";
-                downloadBtn.style.display = "none";
-                return;
-            }
-            
-            // Update media URL display
-            document.querySelector('.media-url').textContent = url.length > 50 ? url.substring(0, 50) + '...' : url;
-            
-            // Set media type badge
-            mediaTypeEl.textContent = type.charAt(0).toUpperCase() + type.slice(1);
-            
-            // Set button URLs
-            openBtn.href = url;
-            downloadBtn.href = url;
-            
-            // Display the appropriate media player
-            let html = "";
-            if (type === "video") {
-                html = `
-                    <video controls autoplay onloadstart="updateProgress(25)" oncanplay="updateProgress(75)" oncanplaythrough="updateProgress(100)">
-                        <source src="${url}" type="video/mp4">
-                        Your browser does not support the video tag.
-                    </video>
-                `;
-            } else if (type === "audio") {
-                html = `
-                    <div class="custom-audio-player">
-                        <audio controls autoplay onloadstart="updateProgress(25)" oncanplay="updateProgress(75)" oncanplaythrough="updateProgress(100)">
-                            <source src="${url}" type="audio/mpeg">
-                            Your browser does not support the audio element.
-                        </audio>
-                    </div>
-                `;
-            } else if (type === "image") {
-                html = `<img src="${url}" alt="Cloud Image" onload="updateProgress(100)">`;
-            } else {
-                html = `
-                    <div class="error">
-                        <i class="fas fa-times-circle"></i>
-                        <h2>Unsupported Media Type</h2>
-                        <p>Type: ${type} is not supported.</p>
-                    </div>
-                `;
-            }
-            
-            // Add a small delay to simulate loading (for demo purposes)
-            setTimeout(() => {
-                playerEl.innerHTML = html;
-                updateProgress(30);
-            }, 800);
-            
-            setTimeout(() => updateProgress(70), 1600);
-        }
-        
-        function updateProgress(percent) {
-            const progressBar = document.getElementById("progressBar");
-            if (progressBar) {
-                progressBar.style.width = percent + "%";
-                
-                // Hide progress bar when loading is complete
-                if (percent === 100) {
-                    setTimeout(() => {
-                        progressBar.style.opacity = "0";
-                    }, 500);
-                }
-            }
-        }
-        
-        // Initialize the player when page loads
-        document.addEventListener("DOMContentLoaded", displayMedia);
-        
-        // Add event listener for the "New Content" button
-        document.getElementById("newContentBtn").addEventListener("click", function() {
-            const fileInputContainer = document.getElementById("fileInputContainer");
-            fileInputContainer.style.display = fileInputContainer.style.display === "none" ? "block" : "none";
-        });
-        
-        // Handle file selection
-        document.getElementById("fileInput").addEventListener("change", function(e) {
-            if (e.target.files && e.target.files[0]) {
-                const file = e.target.files[0];
-                const fileType = file.type.split('/')[0];
-                
-                if (fileType === "video" || fileType === "audio" || fileType === "image") {
-                    const objectURL = URL.createObjectURL(file);
-                    
-                    // Update the player with the new file
-                    const playerEl = document.getElementById("player");
-                    const mediaTypeEl = document.querySelector(".media-type");
-                    const openBtn = document.getElementById("openBtn");
-                    const downloadBtn = document.getElementById("downloadBtn");
-                    
-                    // Update media URL display
-                    document.querySelector('.media-url').textContent = file.name;
-                    
-                    // Set media type badge
-                    mediaTypeEl.textContent = fileType.charAt(0).toUpperCase() + fileType.slice(1);
-                    
-                    // Set button URLs
-                    openBtn.href = objectURL;
-                    downloadBtn.href = objectURL;
-                    downloadBtn.download = file.name;
-                    
-                    // Display the appropriate media player
-                    let html = "";
-                    if (fileType === "video") {
-                        html = `
-                            <video controls autoplay>
-                                <source src="${objectURL}" type="${file.type}">
-                                Your browser does not support the video tag.
-                            </video>
-                        `;
-                    } else if (fileType === "audio") {
-                        html = `
-                            <div class="custom-audio-player">
-                                <audio controls autoplay>
-                                    <source src="${objectURL}" type="${file.type}">
-                                    Your browser does not support the audio element.
-                                </audio>
-                            </div>
-                        `;
-                    } else if (fileType === "image") {
-                        html = `<img src="${objectURL}" alt="${file.name}">`;
-                    }
-                    
-                    playerEl.innerHTML = html;
-                    
-                    // Hide the file input container
-                    document.getElementById("fileInputContainer").style.display = "none";
-                } else {
-                    alert("Please select a valid audio, video, or image file.");
-                }
-            }
-        });
-        
-        // Enable drag and drop for file input
-        const fileInputLabel = document.querySelector('.file-input-label');
-        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-            fileInputLabel.addEventListener(eventName, preventDefaults, false);
-        });
-        
-        function preventDefaults(e) {
-            e.preventDefault();
-            e.stopPropagation();
-        }
-        
-        ['dragenter', 'dragover'].forEach(eventName => {
-            fileInputLabel.addEventListener(eventName, highlight, false);
-        });
-        
-        ['dragleave', 'drop'].forEach(eventName => {
-            fileInputLabel.addEventListener(eventName, unhighlight, false);
-        });
-        
-        function highlight() {
-            fileInputLabel.style.background = 'rgba(50, 50, 80, 0.7)';
-            fileInputLabel.style.borderColor = '#00f2fe';
-        }
-        
-        function unhighlight() {
-            fileInputLabel.style.background = 'rgba(30, 30, 45, 0.7)';
-            fileInputLabel.style.borderColor = '#4facfe';
-        }
-        
-        fileInputLabel.addEventListener('drop', handleDrop, false);
-        
-        function handleDrop(e) {
-            const dt = e.dataTransfer;
-            const files = dt.files;
-            document.getElementById('fileInput').files = files;
-            
-            // Trigger the change event
-            const event = new Event('change');
-            document.getElementById('fileInput').dispatchEvent(event);
-        }
-        
-        // Handle download option buttons
-        document.querySelectorAll('.download-buttons .btn').forEach(btn => {
-            btn.addEventListener('click', function(e) {
-                e.preventDefault();
-                alert('Download functionality would be implemented here based on the selected option.');
-            });
-        });
-    </script>
+      <div class="file-details">
+        <h2>File Details</h2>
+        <div class="detail-item">
+          <i class="fas fa-file-video"></i>
+          <span id="fileName">Name: Loading...</span>
+        </div>
+        <div class="detail-item">
+          <i class="fas fa-database"></i>
+          <span>Size: 130.85 MB</span>
+        </div>
+        <div class="detail-item">
+          <i class="fas fa-clock"></i>
+          <span>Duration: Loading...</span>
+        </div>
+        <div class="detail-item">
+          <i class="fas fa-film"></i>
+          <span>Quality: 480p BD</span>
+        </div>
+      </div>
+      
+      <div class="controls">
+        <div class="control-row">
+            <a href="#" class="btn btn-blue" title="Requires VLC app installed">
+              <i class="fas fa-play"></i>VLC Player
+            </a>
+            <a href="#" class="btn btn-blue" title="Requires MX Player app installed">
+              <i class="fas fa-play"></i>MX Player
+            </a>
+        </div>
+        <a href="#" class="btn btn-purple">
+          <i class="fas fa-ellipsis-h"></i>Play in Other Players
+        </a>
+        <a href="#" class="btn btn-telegram">
+          <i class="fab fa-telegram-plane"></i>Get as TG File
+        </a>
+        <a id="highSpeedDownloadBtn" download class="btn btn-green">
+            <i class="fas fa-rocket"></i>High Speed Download
+        </a>
+        <a id="normalDownloadBtn" download class="btn btn-green">
+            <i class="fas fa-cloud-download-alt"></i>Normal Speed Download
+        </a>
+      </div>
+    </div>
+    
+    <footer>
+      <p>Cloud Player &copy; 2023 | Secure Media Streaming</p>
+    </footer>
+  </div>
+
+  <script>
+    function decodeBase64Url(encoded) {
+      try {
+        let pad = encoded.length % 4;
+        if (pad) encoded += "=".repeat(4 - pad);
+        return atob(encoded.replace(/-/g, '+').replace(/_/g, '/'));
+      } catch { return null; }
+    }
+    
+    function displayMedia() {
+      const parts = window.location.pathname.split("/");
+      const type = parts.length > 2 ? parts[2] : 'video'; // Default to video
+      const encoded = parts.length > 3 ? parts[3] : '';
+      const url = decodeBase64Url(encoded);
+      
+      const playerEl = document.getElementById("player");
+      const highSpeedBtn = document.getElementById("highSpeedDownloadBtn");
+      const normalBtn = document.getElementById("normalDownloadBtn");
+      const fileNameEl = document.getElementById("fileName");
+
+      // Placeholder for URL if not found in path
+      const placeholderUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4";
+      const finalUrl = url || placeholderUrl;
+      
+      if (!finalUrl) {
+        playerEl.innerHTML = `
+          <div class="error">
+            <i class="fas fa-exclamation-circle"></i>
+            <h2>Invalid or Expired Link</h2>
+            <p>The media link is invalid or may have expired.</p>
+          </div>
+        `;
+        fileNameEl.textContent = "Name: Invalid Link";
+        document.querySelector(".controls").style.display = 'none';
+        return;
+      }
+      
+      // Update File Details
+      const urlFileName = finalUrl.substring(finalUrl.lastIndexOf('/') + 1);
+      fileNameEl.textContent = `Name: ${urlFileName || 'Streamable Content'}`;
+      
+      // Set button URLs
+      highSpeedBtn.href = finalUrl;
+      normalBtn.href = finalUrl;
+      
+      // Display the appropriate media player
+      let html = "";
+      if (type === "video") {
+        html = `<video controls autoplay><source src="${finalUrl}" type="video/mp4"></video>`;
+      } else if (type === "audio") {
+        html = `<div class="custom-audio-player"><audio controls autoplay><source src="${finalUrl}"></audio></div>`;
+      } else if (type === "image") {
+        html = `<img src="${finalUrl}" alt="Cloud Image">`;
+      } else {
+        html = `
+          <div class="error">
+            <i class="fas fa-times-circle"></i>
+            <h2>Unsupported Media Type</h2>
+            <p>Type: ${type} is not supported.</p>
+          </div>
+        `;
+      }
+      
+      playerEl.innerHTML = html;
+    }
+    
+    document.addEventListener("DOMContentLoaded", displayMedia);
+  </script>
 </body>
 </html>
+
