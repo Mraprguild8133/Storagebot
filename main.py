@@ -4,7 +4,12 @@ import boto3
 import asyncio
 import re
 import base64
+import aiohttp
+import aiofiles
+import gzip
+import math
 from threading import Thread
+from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, render_template
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
@@ -32,6 +37,11 @@ WASABI_BUCKET = os.getenv("WASABI_BUCKET")
 WASABI_REGION = os.getenv("WASABI_REGION", "us-east-1")
 RENDER_URL = os.getenv("RENDER_URL", "http://localhost:8000")
 
+# Performance settings
+DOWNLOAD_CHUNK_SIZE = 8 * 1024 * 1024  # 8MB chunks for multipart downloads
+MAX_WORKERS = 10  # Maximum parallel downloads
+COMPRESSION_THRESHOLD = 5 * 1024 * 1024  # Compress files larger than 5MB
+
 # Validate environment variables
 missing_vars = []
 for var_name, var_value in [
@@ -51,18 +61,21 @@ if missing_vars:
 # Initialize clients
 app = Client("wasabi_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Configure Wasabi S3 client
+# Configure Wasabi S3 client with optimized settings
 try:
     wasabi_endpoint_url = f'https://s3.{WASABI_REGION}.wasabisys.com'
     
-    # Wasabi requires special configuration
-    s3_client = boto3.client(
+    # Wasabi requires special configuration with optimized settings
+    session = boto3.Session()
+    s3_client = session.client(
         's3',
         endpoint_url=wasabi_endpoint_url,
         aws_access_key_id=WASABI_ACCESS_KEY,
         aws_secret_access_key=WASABI_SECRET_KEY,
         region_name=WASABI_REGION,
         config=boto3.session.Config(
+            max_pool_connections=MAX_WORKERS * 2,
+            retries={'max_attempts': 3, 'mode': 'standard'},
             s3={'addressing_style': 'virtual'},
             signature_version='s3v4'
         )
@@ -82,13 +95,17 @@ except Exception as e:
             endpoint_url=wasabi_endpoint_url,
             aws_access_key_id=WASABI_ACCESS_KEY,
             aws_secret_access_key=WASABI_SECRET_KEY,
-            region_name=WASABI_REGION
+            region_name=WASABI_REGION,
+            config=boto3.session.Config(max_pool_connections=MAX_WORKERS * 2)
         )
         s3_client.head_bucket(Bucket=WASABI_BUCKET)
         logger.info("Successfully connected to Wasabi bucket with alternative endpoint")
     except Exception as alt_e:
         logger.error(f"Alternative connection also failed: {alt_e}")
         raise Exception(f"Could not connect to Wasabi: {alt_e}")
+
+# Create a thread pool for parallel operations
+executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
 # -----------------------------
 # Flask app for player.html
@@ -178,6 +195,111 @@ def create_download_keyboard(presigned_url, player_url=None):
     
     return InlineKeyboardMarkup(keyboard)
 
+# High-speed download functions
+async def download_file_part(session, url, start_byte, end_byte, part_number, output_path):
+    """Download a specific part of a file"""
+    headers = {'Range': f'bytes={start_byte}-{end_byte}'}
+    async with session.get(url, headers=headers) as response:
+        response.raise_for_status()
+        async with aiofiles.open(f"{output_path}.part{part_number}", 'wb') as f:
+            async for chunk in response.content.iter_chunked(256 * 1024):  # 256KB chunks
+                await f.write(chunk)
+    return part_number
+
+async def download_with_progress(session, url, file_path, file_size, status_message, file_name):
+    """Download file with progress tracking using multiple connections"""
+    start_time = time.time()
+    last_update_time = start_time
+    downloaded_size = 0
+    
+    # For small files, use single connection
+    if file_size < DOWNLOAD_CHUNK_SIZE * 2:
+        async with session.get(url) as response:
+            response.raise_for_status()
+            async with aiofiles.open(file_path, 'wb') as f:
+                async for chunk in response.content.iter_chunked(256 * 1024):  # 256KB chunks
+                    await f.write(chunk)
+                    downloaded_size += len(chunk)
+                    
+                    # Update progress every 1 second
+                    current_time = time.time()
+                    if current_time - last_update_time >= 1:
+                        elapsed = current_time - start_time
+                        speed = downloaded_size / elapsed
+                        eta = (file_size - downloaded_size) / speed if speed > 0 else 0
+                        
+                        progress = (downloaded_size / file_size) * 100
+                        progress_bar = "[" + "=" * int(progress / 5) + ">" + " " * (20 - int(progress / 5)) + "]"
+                        
+                        await status_message.edit_text(
+                            f"📥 Downloading: {file_name}\n"
+                            f"{progress_bar} {progress:.1f}%\n"
+                            f"📦 {humanbytes(downloaded_size)} / {humanbytes(file_size)}\n"
+                            f"⚡ {humanbytes(speed)}/s\n"
+                            f"⏱️ ETA: {eta:.1f}s"
+                        )
+                        last_update_time = current_time
+        return
+    
+    # For large files, use multipart download
+    part_size = DOWNLOAD_CHUNK_SIZE
+    num_parts = math.ceil(file_size / part_size)
+    
+    # Create download tasks for each part
+    tasks = []
+    for i in range(num_parts):
+        start_byte = i * part_size
+        end_byte = min(start_byte + part_size - 1, file_size - 1)
+        tasks.append(download_file_part(session, url, start_byte, end_byte, i, file_path))
+    
+    # Execute downloads in parallel
+    completed = 0
+    for coro in asyncio.as_completed(tasks):
+        part_number = await coro
+        completed += 1
+        downloaded_size = completed * part_size
+        
+        # Update progress every 1 second
+        current_time = time.time()
+        if current_time - last_update_time >= 1:
+            elapsed = current_time - start_time
+            speed = downloaded_size / elapsed
+            eta = (file_size - downloaded_size) / speed if speed > 0 else 0
+            
+            progress = (downloaded_size / file_size) * 100
+            progress_bar = "[" + "=" * int(progress / 5) + ">" + " " * (20 - int(progress / 5)) + "]"
+            
+            await status_message.edit_text(
+                f"📥 Downloading: {file_name}\n"
+                f"{progress_bar} {progress:.1f}%\n"
+                f"📦 {humanbytes(downloaded_size)} / {humanbytes(file_size)}\n"
+                f"⚡ {humanbytes(speed)}/s\n"
+                f"⏱️ ETA: {eta:.1f}s\n"
+                f"🔗 Parts: {completed}/{num_parts}"
+            )
+            last_update_time = current_time
+    
+    # Combine parts into single file
+    async with aiofiles.open(file_path, 'wb') as output_file:
+        for i in range(num_parts):
+            part_path = f"{file_path}.part{i}"
+            async with aiofiles.open(part_path, 'rb') as part_file:
+                content = await part_file.read()
+                await output_file.write(content)
+            os.remove(part_path)
+
+async def compress_file(input_path, output_path):
+    """Compress file using gzip"""
+    async with aiofiles.open(input_path, 'rb') as f_in:
+        async with aiofiles.open(output_path, 'wb') as f_out:
+            async with gzip.GzipFile(fileobj=f_out, mode='wb') as gz:
+                while True:
+                    chunk = await f_in.read(256 * 1024)  # 256KB chunks
+                    if not chunk:
+                        break
+                    gz.write(chunk)
+    return output_path
+
 # Bot handlers
 @app.on_message(filters.command("start"))
 async def start_command(client, message: Message):
@@ -255,39 +377,58 @@ async def download_file_handler(client, message: Message):
 
     file_name = " ".join(message.command[1:])
     user_file_name = f"{get_user_folder(message.from_user.id)}/{file_name}"
+    local_path = f"./downloads/{file_name}"
+    os.makedirs("./downloads", exist_ok=True)
     
     status_message = await message.reply_text(f"Generating download link for {file_name}...")
     
     try:
-        # Check if file exists
-        s3_client.head_object(Bucket=WASABI_BUCKET, Key=user_file_name)
+        # Get file info
+        file_info = s3_client.head_object(Bucket=WASABI_BUCKET, Key=user_file_name)
+        file_size = file_info['ContentLength']
         
         # Generate presigned URL
         presigned_url = s3_client.generate_presigned_url(
             'get_object', 
             Params={'Bucket': WASABI_BUCKET, 'Key': user_file_name}, 
-            ExpiresIn=86400
+            ExpiresIn=3600  # 1 hour for download
         )
         
-        # Generate player URL if supported
-        player_url = generate_player_url(file_name, presigned_url)
+        # Download with high-speed method
+        await status_message.edit_text(f"🚀 Starting high-speed download: {file_name}")
         
-        # Create keyboard with options
-        keyboard = create_download_keyboard(presigned_url, player_url)
+        connector = aiohttp.TCPConnector(limit=MAX_WORKERS, force_close=False)
+        async with aiohttp.ClientSession(connector=connector) as session:
+            await download_with_progress(session, presigned_url, local_path, file_size, status_message, file_name)
         
-        response_text = f"📥 Download ready for: {file_name}\n⏰ Link expires: 24 hours"
+        # Check if we should compress the file
+        final_path = local_path
+        if file_size > COMPRESSION_THRESHOLD and not file_name.lower().endswith(('.zip', '.rar', '.7z', '.gz')):
+            await status_message.edit_text(f"📦 Compressing {file_name} for faster transfer...")
+            compressed_path = f"{local_path}.gz"
+            await compress_file(local_path, compressed_path)
+            final_path = compressed_path
+            os.remove(local_path)
         
-        if player_url:
-            response_text += f"\n\n🎬 Web Player: {player_url}"
+        # Send to user
+        caption = f"Downloaded: {file_name}"
+        if final_path.endswith('.gz'):
+            caption += " (compressed)"
         
-        await status_message.edit_text(
-            response_text,
-            reply_markup=keyboard
+        await message.reply_document(
+            document=final_path,
+            caption=caption
         )
-
+        
+        await status_message.delete()
+        
     except Exception as e:
         logger.error(f"Download error: {e}")
         await status_message.edit_text(f"Error: {str(e)}")
+    finally:
+        for path in [local_path, f"{local_path}.gz"]:
+            if os.path.exists(path):
+                os.remove(path)
 
 # -----------------------------
 # Player Command Handler
@@ -377,5 +518,5 @@ print("Starting Flask server on port 8000...")
 Thread(target=run_flask, daemon=True).start()
 
 if __name__ == "__main__":
-    print("Starting Wasabi Storage Bot with Web Player...")
+    print("Starting Wasabi Storage Bot with High-Speed Downloads...")
     app.run()
