@@ -1,16 +1,15 @@
 import os
 import time
-import boto3
-import asyncio
 import re
 import base64
+import logging
+import asyncio
 from threading import Thread
 from flask import Flask, render_template
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from dotenv import load_dotenv
-from urllib.parse import quote
-import logging
+import boto3
 from boto3.s3.transfer import TransferConfig
 
 # -----------------------------
@@ -39,11 +38,17 @@ RENDER_URL = os.getenv("RENDER_URL", "http://localhost:8000")
 # -----------------------------
 # Validate ENV
 # -----------------------------
-missing_vars = [
-    v for v in ["API_ID", "API_HASH", "BOT_TOKEN", "WASABI_ACCESS_KEY",
-                "WASABI_SECRET_KEY", "WASABI_BUCKET"]
-    if not globals().get(v)
-]
+missing_vars = []
+for name, val in [
+    ("API_ID", API_ID),
+    ("API_HASH", API_HASH),
+    ("BOT_TOKEN", BOT_TOKEN),
+    ("WASABI_ACCESS_KEY", WASABI_ACCESS_KEY),
+    ("WASABI_SECRET_KEY", WASABI_SECRET_KEY),
+    ("WASABI_BUCKET", WASABI_BUCKET)
+]:
+    if not val:
+        missing_vars.append(name)
 if missing_vars:
     raise Exception(f"Missing environment variables: {', '.join(missing_vars)}")
 
@@ -63,7 +68,14 @@ s3_client = boto3.client(
     aws_secret_access_key=WASABI_SECRET_KEY,
     region_name=WASABI_REGION
 )
-s3_client.head_bucket(Bucket=WASABI_BUCKET)
+
+# Check bucket access (log error but let it raise if necessary)
+try:
+    s3_client.head_bucket(Bucket=WASABI_BUCKET)
+    logger.info("Connected to Wasabi bucket")
+except Exception as e:
+    logger.exception("Failed to access Wasabi bucket. Check credentials/region/bucket name.")
+    raise
 
 # Extreme speed config for uploads
 MB = 1024 ** 2
@@ -150,6 +162,9 @@ def create_download_keyboard(presigned_url, player_url=None):
     keyboard.append([InlineKeyboardButton("📥 Direct Download", url=presigned_url)])
     return InlineKeyboardMarkup(keyboard)
 
+# Ensure download dir exists
+os.makedirs("downloads", exist_ok=True)
+
 # -----------------------------
 # Bot Handlers
 # -----------------------------
@@ -166,7 +181,8 @@ async def start_command(client, message: Message):
 
 @app.on_message(filters.document | filters.video | filters.audio | filters.photo)
 async def upload_file_handler(client, message: Message):
-    media = message.document or message.video or message.audio or message.photo
+    # For photos, pick highest-res photo object
+    media = message.document or message.video or message.audio or (message.photo and message.photo[-1])
     if not media:
         await message.reply_text("Unsupported file type")
         return
@@ -174,17 +190,15 @@ async def upload_file_handler(client, message: Message):
     status_message = await message.reply_text("Downloading file...")
 
     try:
-        # Fast download from Telegram
-        file_path = await message.download(
-            block=True,
-            file_name="downloads/",
-            chunk_size=1024 * 1024  # 1MB chunks
-        )
+        # Use Pyrogram's download (do NOT pass unsupported chunk_size/block args)
+        file_path = await message.download(file_name="downloads/")
 
         file_name = sanitize_filename(os.path.basename(file_path))
         user_file_name = f"{get_user_folder(message.from_user.id)}/{file_name}"
 
-        # Extreme speed Wasabi upload
+        await status_message.edit_text("Uploading to Wasabi...")
+
+        # Upload in threadpool (proper keyword args) with TransferConfig
         await asyncio.to_thread(
             s3_client.upload_file,
             Filename=file_path,
@@ -200,34 +214,37 @@ async def upload_file_handler(client, message: Message):
             ExpiresIn=86400
         )
 
-        # Player URL if supported
         player_url = generate_player_url(file_name, presigned_url)
-
         keyboard = create_download_keyboard(presigned_url, player_url)
 
-        file_size = media.file_size if hasattr(media, "file_size") else 0
-        if message.photo:
-            file_size = os.path.getsize(file_path)
+        # Determine file size (prefer metadata if available)
+        file_size = 0
+        if hasattr(media, "file_size") and media.file_size:
+            file_size = media.file_size
+        else:
+            try:
+                file_size = os.path.getsize(file_path)
+            except Exception:
+                file_size = 0
 
         response_text = (
             f"✅ Upload complete!\n\n📁 File: {file_name}\n"
             f"📦 Size: {humanbytes(file_size)}\n⏰ Link expires: 24 hours"
         )
-
         if player_url:
             response_text += f"\n\n🎬 Web Player: {player_url}"
 
-        await status_message.edit_text(
-            response_text,
-            reply_markup=keyboard
-        )
+        await status_message.edit_text(response_text, reply_markup=keyboard)
 
     except Exception as e:
-        logger.error(f"Upload error: {e}")
+        logger.exception("Upload error")
         await status_message.edit_text(f"Error: {str(e)}")
     finally:
         if "file_path" in locals() and os.path.exists(file_path):
-            os.remove(file_path)
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
 
 @app.on_message(filters.command("download"))
 async def download_file_handler(client, message: Message):
@@ -254,12 +271,9 @@ async def download_file_handler(client, message: Message):
         if player_url:
             response_text += f"\n\n🎬 Web Player: {player_url}"
 
-        await status_message.edit_text(
-            response_text,
-            reply_markup=keyboard
-        )
+        await status_message.edit_text(response_text, reply_markup=keyboard)
     except Exception as e:
-        logger.error(f"Download error: {e}")
+        logger.exception("Download error")
         await status_message.edit_text(f"Error: {str(e)}")
 
 @app.on_message(filters.command("play"))
@@ -287,6 +301,7 @@ async def play_file(client, message: Message):
         else:
             await message.reply_text("This file type doesn't support web playback.")
     except Exception as e:
+        logger.exception("Play error")
         await message.reply_text(f"File not found or error: {str(e)}")
 
 @app.on_message(filters.command("list"))
@@ -306,7 +321,7 @@ async def list_files(client, message: Message):
 
         await message.reply_text(f"📁 Your files:\n\n{files_list}")
     except Exception as e:
-        logger.error(f"List files error: {e}")
+        logger.exception("List files error")
         await message.reply_text(f"Error: {str(e)}")
 
 @app.on_message(filters.command("delete"))
@@ -322,7 +337,7 @@ async def delete_file(client, message: Message):
         s3_client.delete_object(Bucket=WASABI_BUCKET, Key=user_file_name)
         await message.reply_text(f"✅ Deleted: {file_name}")
     except Exception as e:
-        logger.error(f"Delete error: {e}")
+        logger.exception("Delete error")
         await message.reply_text(f"Error: {str(e)}")
 
 # -----------------------------
