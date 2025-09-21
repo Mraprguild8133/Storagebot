@@ -7,6 +7,7 @@ import base64
 from threading import Thread
 from flask import Flask, render_template
 from pyrogram import Client, filters
+from telegram import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from pyrogram.errors import FloodWait
 from dotenv import load_dotenv
@@ -391,6 +392,22 @@ async def download_file_handler(client, message: Message):
             'get_object', 
             Params={'Bucket': WASABI_BUCKET, 'Key': user_file_name}, 
             ExpiresIn=86400
+        )
+        
+        # Generate player URL if supported
+        player_url = generate_player_url(file_name, presigned_url)
+        
+        # Create keyboard with options
+        keyboard = create_download_keyboard(presigned_url, player_url)
+        
+        response_text = f"📥 Download ready for: {file_name}\n⏰ Link expires: 24 hours"
+        
+        if player_url:
+            response_text += f"\n\n🎬 Web Player: {player_url}"
+        
+        await status_message.edit_text(
+            response_text,
+            reply_markup=keyboard
         )
 
     except botocore.exceptions.ClientError as e:
