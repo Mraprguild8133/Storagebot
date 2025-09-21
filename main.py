@@ -231,15 +231,16 @@ async def start_command(client, message: Message):
         "Use /download <filename> to download files\n"
         "Use /play <filename> to get web player links\n"
         "Use /list to see your files\n"
-        "Use /delete <filename> to remove files"
+        "Use /delete <filename> to remove files\n\n"
         "<b>⚡ Extreme Performance Features:</b>\n"
-                "• 2GB file size support\n"
-                "• Real-time speed monitoring with smoothing\n"
-                "• Memory optimization for large files\n"
-                "• TCP Keepalive for stable connections\n\n"
-                "<b>💎 Owner:</b> Mraprguild\n"
-                "<b>📧 Email:</b> mraprguild@gmail.com\n"
-                "<b>📱 Telegram:</b> @Sathishkumar33",
+        "• 2GB file size support\n"
+        "• Real-time speed monitoring with smoothing\n"
+        "• Memory optimization for large files\n"
+        "• TCP Keepalive for stable connections\n\n"
+        "<b>💎 Owner:</b> Mraprguild\n"
+        "<b>📧 Email:</b> mraprguild@gmail.com\n"
+        "<b>📱 Telegram:</b> @Sathishkumar33",
+        parse_mode="html"
     )
 
 @app.on_message(filters.document | filters.video | filters.audio | filters.photo)
@@ -395,6 +396,9 @@ async def download_file_handler(client, message: Message):
         
         # Generate player URL if supported
         player_url = generate_player_url(file_name, presigned_url)
+        
+        # Create keyboard with options
+        keyboard = create_download_keyboard(presigned_url, player_url)
         
         response_text = f"📥 Download ready for: {file_name}\n⏰ Link expires: 24 hours"
         
