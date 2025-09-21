@@ -406,7 +406,7 @@ async def download_file_handler(client, message: Message):
         
         await status_message.edit_text(
             response_text,
-            reply_markup=keyboard
+            reply_markup=text
         )
 
     except botocore.exceptions.ClientError as e:
