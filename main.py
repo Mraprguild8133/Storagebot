@@ -1,100 +1,190 @@
 import os
-import time
-import boto3
-import asyncio
 import re
 import base64
-from threading import Thread
-from flask import Flask, render_template
-from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
-from pyrogram.errors import FloodWait
-from dotenv import load_dotenv
-from urllib.parse import quote
-import logging
+import asyncio
+import traceback
+import socket
+import requests
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import partial
+import time
 import math
-from collections import defaultdict
-from datetime import datetime, timedelta
-import botocore
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError, NoCredentialsError, EndpointConnectionError
+from dotenv import load_dotenv
+from pyrogram import Client, filters
+from pyrogram.types import Message
 
+from flask import Flask, render_template
+from threading import Thread
+
+# -----------------------------
 # Load environment variables
+# -----------------------------
 load_dotenv()
 
-# Configuration
-API_ID = os.getenv("API_ID")
-API_HASH = os.getenv("API_HASH")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-WASABI_ACCESS_KEY = os.getenv("WASABI_ACCESS_KEY")
-WASABI_SECRET_KEY = os.getenv("WASABI_SECRET_KEY")
-WASABI_BUCKET = os.getenv("WASABI_BUCKET")
-WASABI_REGION = os.getenv("WASABI_REGION", "us-east-1")
-RENDER_URL = os.getenv("RENDER_URL", "http://localhost:8000")
-MAX_FILE_SIZE = 2000 * 1024 * 1024  # 2GB
+required_env_vars = {
+    "API_ID": os.getenv("API_ID"),
+    "API_HASH": os.getenv("API_HASH"),
+    "BOT_TOKEN": os.getenv("BOT_TOKEN"),
+    "WASABI_ACCESS_KEY": os.getenv("WASABI_ACCESS_KEY"),
+    "WASABI_SECRET_KEY": os.getenv("WASABI_SECRET_KEY"),
+    "WASABI_BUCKET": os.getenv("WASABI_BUCKET"),
+    "WASABI_REGION": os.getenv("WASABI_REGION"),
+    "RENDER_URL": os.getenv("RENDER_URL", "").rstrip('/'),
+}
 
-# Validate environment variables
-missing_vars = []
-for var_name, var_value in [
-    ("API_ID", API_ID),
-    ("API_HASH", API_HASH),
-    ("BOT_TOKEN", BOT_TOKEN),
-    ("WASABI_ACCESS_KEY", WASABI_ACCESS_KEY),
-    ("WASABI_SECRET_KEY", WASABI_SECRET_KEY),
-    ("WASABI_BUCKET", WASABI_BUCKET)
-]:
-    if not var_value:
-        missing_vars.append(var_name)
-
+missing_vars = [var for var, value in required_env_vars.items() if not value and var != "RENDER_URL"]
 if missing_vars:
     raise Exception(f"Missing environment variables: {', '.join(missing_vars)}")
 
-# Initialize clients
-app = Client("wasabi_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# -----------------------------
+# Performance Configuration
+# -----------------------------
+MAX_WORKERS = 10
+thread_pool = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
-# Configure Wasabi S3 client
-try:
-    wasabi_endpoint_url = f'https://s3.{WASABI_REGION}.wasabisys.com'
+# -----------------------------
+# Initialize Pyrogram Client
+# -----------------------------
+app = Client(
+    "wasabi_bot",
+    api_id=required_env_vars["API_ID"],
+    api_hash=required_env_vars["API_HASH"],
+    bot_token=required_env_vars["BOT_TOKEN"]
+)
+
+# -----------------------------
+# Wasabi Connection Test & Diagnostics
+# -----------------------------
+def test_wasabi_connection():
+    """Test connection to Wasabi and return diagnostic information"""
+    diagnostics = {
+        "connected": False,
+        "error": None,
+        "bucket_exists": False,
+        "endpoint_reachable": False,
+        "auth_valid": False
+    }
     
-    # Wasabi requires special configuration
-    s3_client = boto3.client(
-        's3',
-        endpoint_url=wasabi_endpoint_url,
-        aws_access_key_id=WASABI_ACCESS_KEY,
-        aws_secret_access_key=WASABI_SECRET_KEY,
-        region_name=WASABI_REGION,
-        config=boto3.session.Config(
-            s3={'addressing_style': 'virtual'},
-            signature_version='s3v4'
-        )
-    )
-    
-    # Test connection
-    s3_client.head_bucket(Bucket=WASABI_BUCKET)
-    logger.info("Successfully connected to Wasabi bucket")
-    
-except Exception as e:
-    logger.error(f"Wasabi connection failed: {e}")
-    # Try alternative endpoint format (some regions use different formats)
     try:
-        wasabi_endpoint_url = f'https://{WASABI_BUCKET}.s3.{WASABI_REGION}.wasabisys.com'
+        # Test network connectivity to Wasabi endpoint
+        wasabi_endpoint_url = f'https://s3.{required_env_vars["WASABI_REGION"]}.wasabisys.com'
+        endpoint_hostname = wasabi_endpoint_url.replace('https://', '')
+        
+        # Test DNS resolution
+        try:
+            socket.gethostbyname(endpoint_hostname)
+            diagnostics["dns_resolved"] = True
+        except socket.gaierror:
+            diagnostics["error"] = f"DNS resolution failed for {endpoint_hostname}"
+            return diagnostics
+        
+        # Test endpoint reachability
+        try:
+            response = requests.get(wasabi_endpoint_url, timeout=10)
+            diagnostics["endpoint_reachable"] = True
+        except requests.exceptions.RequestException as e:
+            diagnostics["error"] = f"Endpoint not reachable: {str(e)}"
+            return diagnostics
+        
+        # Test authentication and bucket access
+        try:
+            s3_config = Config(
+                max_pool_connections=10,
+                retries={'max_attempts': 3, 'mode': 'standard'},
+                connect_timeout=30,
+                read_timeout=60,
+                s3={'addressing_style': 'virtual'},
+            )
+            
+            s3_client = boto3.client(
+                's3',
+                endpoint_url=wasabi_endpoint_url,
+                aws_access_key_id=required_env_vars["WASABI_ACCESS_KEY"],
+                aws_secret_access_key=required_env_vars["WASABI_SECRET_KEY"],
+                config=s3_config
+            )
+            
+            # Test authentication by listing buckets
+            s3_client.list_buckets()
+            diagnostics["auth_valid"] = True
+            
+            # Test if bucket exists
+            try:
+                s3_client.head_bucket(Bucket=required_env_vars["WASABI_BUCKET"])
+                diagnostics["bucket_exists"] = True
+                diagnostics["connected"] = True
+            except ClientError as e:
+                error_code = e.response['Error']['Code']
+                if error_code == '404':
+                    diagnostics["error"] = f"Bucket '{required_env_vars['WASABI_BUCKET']}' does not exist"
+                elif error_code == '403':
+                    diagnostics["error"] = f"Access denied to bucket '{required_env_vars['WASABI_BUCKET']}'"
+                else:
+                    diagnostics["error"] = f"Bucket error: {str(e)}"
+                    
+        except NoCredentialsError:
+            diagnostics["error"] = "Wasabi credentials are missing or invalid"
+        except ClientError as e:
+            error_code = e.response['Error']['Code']
+            if error_code == 'InvalidAccessKeyId':
+                diagnostics["error"] = "Wasabi access key is invalid"
+            elif error_code == 'SignatureDoesNotMatch':
+                diagnostics["error"] = "Wasabi secret key is invalid"
+            else:
+                diagnostics["error"] = f"Authentication error: {str(e)}"
+        except EndpointConnectionError:
+            diagnostics["error"] = f"Could not connect to Wasabi endpoint: {wasabi_endpoint_url}"
+        except Exception as e:
+            diagnostics["error"] = f"Unexpected error: {str(e)}"
+            
+    except Exception as e:
+        diagnostics["error"] = f"Connection test failed: {str(e)}"
+    
+    return diagnostics
+
+# -----------------------------
+# Initialize Wasabi S3 client with error handling
+# -----------------------------
+def create_s3_client():
+    """Create S3 client with proper error handling"""
+    wasabi_endpoint_url = f'https://s3.{required_env_vars["WASABI_REGION"]}.wasabisys.com'
+    
+    try:
+        s3_config = Config(
+            max_pool_connections=50,
+            retries={'max_attempts': 3, 'mode': 'standard'},
+            connect_timeout=30,
+            read_timeout=60,
+            s3={'addressing_style': 'virtual'},
+        )
+
         s3_client = boto3.client(
             's3',
             endpoint_url=wasabi_endpoint_url,
-            aws_access_key_id=WASABI_ACCESS_KEY,
-            aws_secret_access_key=WASABI_SECRET_KEY,
-            region_name=WASABI_REGION
+            aws_access_key_id=required_env_vars["WASABI_ACCESS_KEY"],
+            aws_secret_access_key=required_env_vars["WASABI_SECRET_KEY"],
+            config=s3_config
         )
-        s3_client.head_bucket(Bucket=WASABI_BUCKET)
-        logger.info("Successfully connected to Wasabi bucket with alternative endpoint")
-    except Exception as alt_e:
-        logger.error(f"Alternative connection also failed: {alt_e}")
-        raise Exception(f"Could not connect to Wasabi: {alt_e}")
+        
+        # Test connection immediately
+        s3_client.list_buckets()
+        return s3_client, None
+        
+    except Exception as e:
+        return None, str(e)
+
+# Initialize S3 client
+s3_client, s3_error = create_s3_client()
+if s3_client is None:
+    print(f"Failed to initialize Wasabi client: {s3_error}")
+    print("Running connection diagnostics...")
+    diagnostics = test_wasabi_connection()
+    print(f"Connection diagnostics: {diagnostics}")
 
 # -----------------------------
 # Flask app for player.html
@@ -108,7 +198,6 @@ def index():
 @flask_app.route("/player/<media_type>/<encoded_url>")
 def player(media_type, encoded_url):
     try:
-        # Add padding if needed for base64 decoding
         padding = 4 - (len(encoded_url) % 4)
         if padding != 4:
             encoded_url += '=' * padding
@@ -121,36 +210,31 @@ def player(media_type, encoded_url):
 def about():
     return render_template("about.html")
 
-def run_flask():
-    flask_app.run(host="0.0.0.0", port=8000, debug=False)
+@flask_app.route("/diagnostics")
+def diagnostics():
+    """Endpoint to check Wasabi connection status"""
+    diag = test_wasabi_connection()
+    return jsonify(diag)
 
+def run_flask():
+    flask_app.run(host="0.0.0.0", port=8000)
+    
 # -----------------------------
-# Helper Functions
+# Constants & Helpers
 # -----------------------------
+MAX_FILE_SIZE = 2000 * 1024 * 1024
+MULTIPART_THRESHOLD = 100 * 1024 * 1024
+CHUNK_SIZE = 50 * 1024 * 1024
+DOWNLOAD_DIR = Path("./downloads")
+DOWNLOAD_DIR.mkdir(exist_ok=True)
+
 MEDIA_EXTENSIONS = {
     'video': ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.m4v'],
     'audio': ['.mp3', '.m4a', '.ogg', '.wav', '.flac'],
     'image': ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']
 }
 
-def get_file_type(filename):
-    ext = os.path.splitext(filename)[1].lower()
-    for file_type, extensions in MEDIA_EXTENSIONS.items():
-        if ext in extensions:
-            return file_type
-    return 'other'
-
-def generate_player_url(filename, presigned_url):
-    if not RENDER_URL:
-        return None
-    file_type = get_file_type(filename)
-    if file_type in ['video', 'audio', 'image']:
-        encoded_url = base64.urlsafe_b64encode(presigned_url.encode()).decode().rstrip('=')
-        return f"{RENDER_URL}/player/{file_type}/{encoded_url}"
-    return None
-
 def humanbytes(size):
-    """Convert bytes to human readable format"""
     if not size:
         return "0 B"
     power = 1024
@@ -161,247 +245,362 @@ def humanbytes(size):
         size /= power
     return f"{size:.2f} TB"
 
-def sanitize_filename(filename):
-    """Remove potentially dangerous characters from filenames"""
-    filename = re.sub(r'[^a-zA-Z0-9 _.-]', '_', filename)
-    if len(filename) > 200:
-        name, ext = os.path.splitext(filename)
-        filename = name[:200-len(ext)] + ext
-    return filename
-
 def get_user_folder(user_id):
     return f"user_{user_id}"
 
-def create_progress_bar(percentage, length=20):
-    """Create a visual progress bar"""
-    filled = int(length * percentage / 100)
-    empty = length - filled
-    return '█' * filled + '○' * empty
+def sanitize_filename(filename, max_length=150):
+    filename = re.sub(r'[^\w\s.-]', '', filename)
+    filename = re.sub(r'\s+', '_', filename)
+    return filename[:max_length]
 
-def format_eta(seconds):
-    """Format seconds into human readable ETA"""
-    if seconds <= 0:
-        return "00:00"
-    hours, remainder = divmod(seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    if hours > 0:
-        return f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
-    return f"{int(minutes):02d}:{int(seconds):02d}"
+def get_file_type(filename):
+    ext = os.path.splitext(filename)[1].lower()
+    for file_type, extensions in MEDIA_EXTENSIONS.items():
+        if ext in extensions:
+            return file_type
+    return 'other'
 
-def format_elapsed(seconds):
-    """Format elapsed time"""
-    return f"{int(seconds // 60):02d}:{int(seconds % 60):02d}"
-
-# Rate limiting
-user_requests = defaultdict(list)
-
-def is_rate_limited(user_id, limit=5, period=60):
-    now = datetime.now()
-    user_requests[user_id] = [req_time for req_time in user_requests[user_id] if now - req_time < timedelta(seconds=period)]
-    
-    if len(user_requests[user_id]) >= limit:
-        return True
-    
-    user_requests[user_id].append(now)
-    return False
+def generate_player_url(filename, presigned_url):
+    if not required_env_vars["RENDER_URL"]:
+        return None
+    file_type = get_file_type(filename)
+    if file_type in ['video', 'audio', 'image']:
+        encoded_url = base64.urlsafe_b64encode(presigned_url.encode()).decode().rstrip('=')
+        return f"{required_env_vars['RENDER_URL']}/player/{file_type}/{encoded_url}"
+    return None
 
 # -----------------------------
-# Bot Handlers
+# Upload Functions with Error Handling
+# -----------------------------
+async def upload_file_to_wasabi(file_path, user_file_name, file_size):
+    """Upload file to Wasabi with comprehensive error handling"""
+    if s3_client is None:
+        raise Exception("Wasabi client not initialized. Check your credentials and connection.")
+    
+    try:
+        if file_size > MULTIPART_THRESHOLD:
+            return await asyncio.get_event_loop().run_in_executor(
+                thread_pool, 
+                partial(upload_multipart, file_path, user_file_name, file_size)
+            )
+        else:
+            return await asyncio.get_event_loop().run_in_executor(
+                thread_pool,
+                partial(s3_client.upload_file, str(file_path), required_env_vars["WASABI_BUCKET"], user_file_name)
+            )
+    except Exception as e:
+        # Provide more specific error messages
+        if "Access Denied" in str(e):
+            raise Exception("Access denied to Wasabi. Check your credentials and bucket permissions.")
+        elif "NoSuchBucket" in str(e):
+            raise Exception(f"Bucket '{required_env_vars['WASABI_BUCKET']}' does not exist.")
+        elif "Timeout" in str(e):
+            raise Exception("Connection to Wasabi timed out. Check your network connection.")
+        else:
+            raise e
+
+def upload_multipart(file_path, user_file_name, file_size):
+    """Multipart upload with error handling"""
+    try:
+        mpu = s3_client.create_multipart_upload(
+            Bucket=required_env_vars["WASABI_BUCKET"],
+            Key=user_file_name
+        )
+        
+        mpu_id = mpu["UploadId"]
+        parts = []
+        
+        try:
+            part_count = math.ceil(file_size / CHUNK_SIZE)
+            
+            futures = []
+            with ThreadPoolExecutor(max_workers=min(part_count, MAX_WORKERS)) as executor:
+                for part_number in range(1, part_count + 1):
+                    start_byte = (part_number - 1) * CHUNK_SIZE
+                    end_byte = min(start_byte + CHUNK_SIZE, file_size)
+                    
+                    future = executor.submit(
+                        upload_part,
+                        file_path,
+                        user_file_name,
+                        mpu_id,
+                        part_number,
+                        start_byte,
+                        end_byte
+                    )
+                    futures.append(future)
+                
+                for future in as_completed(futures):
+                    parts.append(future.result())
+            
+            parts.sort(key=lambda x: x['PartNumber'])
+            
+            s3_client.complete_multipart_upload(
+                Bucket=required_env_vars["WASABI_BUCKET"],
+                Key=user_file_name,
+                UploadId=mpu_id,
+                MultipartUpload={'Parts': parts}
+            )
+            
+        except Exception as e:
+            s3_client.abort_multipart_upload(
+                Bucket=required_env_vars["WASABI_BUCKET"],
+                Key=user_file_name,
+                UploadId=mpu_id
+            )
+            raise e
+            
+    except Exception as e:
+        raise Exception(f"Multipart upload failed: {str(e)}")
+
+def upload_part(file_path, user_file_name, mpu_id, part_number, start_byte, end_byte):
+    """Upload a single part with retry logic"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            with open(file_path, 'rb') as f:
+                f.seek(start_byte)
+                data = f.read(end_byte - start_byte)
+                
+                part = s3_client.upload_part(
+                    Bucket=required_env_vars["WASABI_BUCKET"],
+                    Key=user_file_name,
+                    PartNumber=part_number,
+                    UploadId=mpu_id,
+                    Body=data
+                )
+                return {'PartNumber': part_number, 'ETag': part['ETag']}
+                
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise e
+            time.sleep(2 ** attempt)  # Exponential backoff
+
+# -----------------------------
+# Telegram Bot Handlers with Connection Checking
 # -----------------------------
 @app.on_message(filters.command("start"))
 async def start_command(client, message: Message):
-    if is_rate_limited(message.from_user.id):
-        await message.reply_text("Too many requests. Please try again in a minute.")
-        return
-        
-    await message.reply_text(
-        "🚀 Cloud Storage Bot with Web Player\n\n"
+    # Test Wasabi connection first
+    diagnostics = test_wasabi_connection()
+    
+    welcome_text = (
+        "🚀 **Cloud Storage Bot**\n\n"
         "Send me any file to upload to Wasabi storage\n"
         "Use /download <filename> to download files\n"
-        "Use /play <filename> to get web player links\n"
         "Use /list to see your files\n"
-        "Use /delete <filename> to remove files\n\n"
-        "<b>⚡ Extreme Performance Features:</b>\n"
-        "• 2GB file size support\n"
-        "• Real-time speed monitoring with smoothing\n"
-        "• Memory optimization for large files\n"
-        "• TCP Keepalive for stable connections\n\n"
-        "<b>💎 Owner:</b> Mraprguild\n"
-        "<b>📧 Email:</b> mraprguild@gmail.com\n"
-        "<b>📱 Telegram:</b> @Sathishkumar33",
-        parse_mode="html"
+        "Use /play <filename> to get a web player link (for media files)\n"
+        "Use /status to check Wasabi connection status\n\n"
+        "⚠️ Maximum file size: 2GB"
     )
+    
+    if not diagnostics["connected"]:
+        welcome_text += f"\n\n❌ **Wasabi Connection Issue:** {diagnostics['error']}"
+    else:
+        welcome_text += "\n\n✅ **Wasabi connection is active**"
+        
+    if required_env_vars["RENDER_URL"]:
+        welcome_text += "\n\n🎥 Web player support is enabled!"
+        
+    await message.reply_text(welcome_text)
+
+@app.on_message(filters.command("status"))
+async def status_command(client, message: Message):
+    """Check Wasabi connection status"""
+    diagnostics = test_wasabi_connection()
+    
+    status_text = "**Wasabi Connection Status:**\n\n"
+    
+    if diagnostics["connected"]:
+        status_text += "✅ **Connected successfully**\n"
+        status_text += f"• Bucket: {diagnostics.get('bucket_exists', False) and '✅ Exists' or '❌ Missing'}\n"
+        status_text += f"• Authentication: {diagnostics.get('auth_valid', False) and '✅ Valid' or '❌ Invalid'}\n"
+        status_text += f"• Endpoint: {diagnostics.get('endpoint_reachable', False) and '✅ Reachable' or '❌ Unreachable'}\n"
+    else:
+        status_text += "❌ **Connection failed**\n"
+        status_text += f"• Error: {diagnostics.get('error', 'Unknown error')}\n"
+        status_text += "\n**Troubleshooting tips:**\n"
+        status_text += "1. Check your WASABI_ACCESS_KEY and WASABI_SECRET_KEY\n"
+        status_text += "2. Verify the WASABI_BUCKET exists\n"
+        status_text += "3. Check your network connection\n"
+        status_text += "4. Ensure WASABI_REGION is correct\n"
+    
+    await message.reply_text(status_text)
 
 @app.on_message(filters.document | filters.video | filters.audio | filters.photo)
 async def upload_file_handler(client, message: Message):
-    if is_rate_limited(message.from_user.id):
-        await message.reply_text("Too many requests. Please try again in a minute.")
+    # Check Wasabi connection first
+    if s3_client is None:
+        await message.reply_text(
+            "❌ Wasabi storage is not available. Please check your credentials.\n"
+            "Use /status to diagnose the connection issue."
+        )
         return
         
+    if not message.from_user:
+        await message.reply_text("Cannot identify user.")
+        return
+
     media = message.document or message.video or message.audio or message.photo
     if not media:
         await message.reply_text("Unsupported file type")
         return
 
-    # Get file size
-    file_size = media.file_size if hasattr(media, 'file_size') else 0
+    # Get filename
+    if hasattr(media, 'file_name') and media.file_name:
+        file_name = media.file_name
+    elif message.photo:
+        file_name = f"photo_{message.id}.jpg"
+    else:
+        file_name = "unknown_file"
     
-    # Check file size limit
-    if file_size > MAX_FILE_SIZE:
+    file_name = sanitize_filename(file_name)
+
+    size = getattr(media, "file_size", None)
+    if size and size > MAX_FILE_SIZE:
         await message.reply_text(f"File too large. Maximum size is {humanbytes(MAX_FILE_SIZE)}")
         return
 
-    status_message = await message.reply_text("📥 Downloading...\n[○○○○○○○○○○○○] 0.0%\nProcessed: 0.00B of 0000MB\nSpeed: 0.00B/s | ETA: -\nElapsed: 00s\nUpload: Telegram\nDownload: Wasabi")
-
-    download_start_time = time.time()
-    last_update_time = time.time()
-    processed_bytes = 0
-    last_processed_bytes = 0
-    start_time = time.time()
-
-    async def progress_callback(current, total):
-        nonlocal processed_bytes, last_update_time, last_processed_bytes
-        processed_bytes = current
-        current_time = time.time()
-        
-        # Update progress every 1 second to avoid flooding
-        if current_time - last_update_time >= 1:
-            percentage = (current / total) * 100
-            elapsed_time = current_time - start_time
-            
-            # Calculate speed
-            speed = (current - last_processed_bytes) / (current_time - last_update_time)
-            
-            # Calculate ETA
-            if speed > 0:
-                eta = (total - current) / speed
-            else:
-                eta = 0
-            
-            # Format progress message
-            progress_bar = create_progress_bar(percentage)
-            progress_text = (
-                f"📥 Downloading...\n"
-                f"[{progress_bar}] {percentage:.1f}%\n"
-                f"Processed: {humanbytes(current)} of {humanbytes(total)}\n"
-                f"Speed: {humanbytes(speed)}/s | ETA: {format_eta(eta)}\n"
-                f"Elapsed: {format_elapsed(elapsed_time)}\n"
-                f"Upload: Telegram\n"
-                f"Download: Wasabi"
-            )
-            
-            try:
-                await status_message.edit_text(progress_text)
-                last_update_time = current_time
-                last_processed_bytes = current
-            except FloodWait as e:
-                await asyncio.sleep(e.value)
-            except Exception:
-                pass  # Ignore other errors during progress updates
+    status_message = await message.reply_text("Downloading file...")
 
     try:
-        # Download file with progress callback
-        file_path = await message.download(progress=progress_callback)
-        file_name = sanitize_filename(os.path.basename(file_path))
+        file_path = await message.download(file_name=DOWNLOAD_DIR / file_name)
         user_file_name = f"{get_user_folder(message.from_user.id)}/{file_name}"
+
+        await status_message.edit_text("Uploading to Wasabi storage...")
         
-        # Update status to uploading
-        await status_message.edit_text("📤 Uploading to Wasabi...")
-        
-        # Upload to Wasabi
-        await asyncio.to_thread(
-            s3_client.upload_file,
-            file_path,
-            WASABI_BUCKET,
-            user_file_name
+        await upload_file_to_wasabi(file_path, user_file_name, size)
+
+        presigned_url = await asyncio.get_event_loop().run_in_executor(
+            thread_pool,
+            partial(
+                s3_client.generate_presigned_url,
+                'get_object',
+                Params={'Bucket': required_env_vars["WASABI_BUCKET"], 'Key': user_file_name},
+                ExpiresIn=86400
+            )
         )
-        
-        # Generate shareable link
-        presigned_url = s3_client.generate_presigned_url(
-            'get_object', 
-            Params={'Bucket': WASABI_BUCKET, 'Key': user_file_name}, 
-            ExpiresIn=86400
-        )
-        
-        # Generate player URL if supported
+
         player_url = generate_player_url(file_name, presigned_url)
-        
-        # Get final file size
-        if message.photo:
-            file_size = os.path.getsize(file_path)
-        
-        total_time = time.time() - start_time
+
         response_text = (
             f"✅ Upload complete!\n\n"
-            f"📁 File: {file_name}\n"
-            f"📦 Size: {humanbytes(file_size)}\n"
-            f"⏱️ Time: {format_elapsed(total_time)}\n"
-            f"⏰ Link expires: 24 hours\n\n"
-            f"📥 Download URL: {presigned_url}"
+            f"File: {file_name}\n"
+            f"Size: {humanbytes(size) if size else 'N/A'}\n"
+            f"Direct Link: {presigned_url}"
+        )
+
+        if player_url:
+            response_text += f"\n\nPlayer URL: {player_url}"
+
+        await status_message.edit_text(response_text)
+
+    except Exception as e:
+        error_msg = f"Error: {str(e)}"
+        if "Access Denied" in str(e):
+            error_msg += "\n\nCheck your Wasabi credentials and bucket permissions."
+        elif "NoSuchBucket" in str(e):
+            error_msg += f"\n\nBucket '{required_env_vars['WASABI_BUCKET']}' does not exist."
+        elif "Timeout" in str(e):
+            error_msg += "\n\nNetwork connection timed out. Please try again."
+            
+        print("Error:", traceback.format_exc())
+        await status_message.edit_text(error_msg)
+    finally:
+        try:
+            if 'file_path' in locals() and os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception as e:
+            print(f"Error cleaning up file: {e}")
+
+# -----------------------------
+# Additional Bot Commands with Error Handling
+# -----------------------------
+@app.on_message(filters.command("list"))
+async def list_files(client, message: Message):
+    if s3_client is None:
+        await message.reply_text("Wasabi storage is not available. Use /status to check connection.")
+        return
+        
+    try:
+        user_folder = get_user_folder(message.from_user.id)
+        response = await asyncio.get_event_loop().run_in_executor(
+            thread_pool,
+            partial(
+                s3_client.list_objects_v2,
+                Bucket=required_env_vars["WASABI_BUCKET"],
+                Prefix=user_folder + "/"
+            )
         )
         
-        if player_url:
-            response_text += f"\n\n🎬 Web Player: {player_url}"
+        if 'Contents' not in response:
+            await message.reply_text("You haven't uploaded any files yet.")
+            return
         
-        await status_message.edit_text(response_text)
+        files = [obj['Key'].replace(f"{user_folder}/", "") for obj in response['Contents']]
+        
+        if not files:
+            await message.reply_text("You haven't uploaded any files yet.")
+            return
+            
+        files_list = "\n".join([f"• {file}" for file in files])
+        await message.reply_text(f"Your files:\n\n{files_list}")
         
     except Exception as e:
-        logger.error(f"Upload error: {e}")
-        await status_message.edit_text(f"❌ Error: {str(e)}")
-    finally:
-        if 'file_path' in locals() and os.path.exists(file_path):
-            os.remove(file_path)
+        await message.reply_text(f"Error listing files: {str(e)}")
 
 @app.on_message(filters.command("download"))
-async def download_file_handler(client, message: Message):
-    if is_rate_limited(message.from_user.id):
-        await message.reply_text("Too many requests. Please try again in a minute.")
+async def download_file(client, message: Message):
+    if s3_client is None:
+        await message.reply_text("Wasabi storage is not available. Use /status to check connection.")
         return
         
-    if len(message.command) < 2:
-        await message.reply_text("Usage: /download <filename>")
-        return
-
-    file_name = " ".join(message.command[1:])
-    user_file_name = f"{get_user_folder(message.from_user.id)}/{file_name}"
-    
-    status_message = await message.reply_text(f"Generating download link for {file_name}...")
-    
     try:
-        # Check if file exists
-        s3_client.head_object(Bucket=WASABI_BUCKET, Key=user_file_name)
+        if len(message.command) < 2:
+            await message.reply_text("Please specify a filename. Usage: /download filename")
+            return
+            
+        filename = " ".join(message.command[1:])
+        user_folder = get_user_folder(message.from_user.id)
+        user_file_name = f"{user_folder}/{filename}"
         
-        # Generate presigned URL
-        presigned_url = s3_client.generate_presigned_url(
-            'get_object', 
-            Params={'Bucket': WASABI_BUCKET, 'Key': user_file_name}, 
-            ExpiresIn=86400
+        # Check if file exists
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                thread_pool,
+                partial(
+                    s3_client.head_object,
+                    Bucket=required_env_vars["WASABI_BUCKET"],
+                    Key=user_file_name
+                )
+            )
+        except:
+            await message.reply_text("File not found.")
+            return
+        
+        # Generate a presigned URL for downloading
+        presigned_url = await asyncio.get_event_loop().run_in_executor(
+            thread_pool,
+            partial(
+                s3_client.generate_presigned_url,
+                'get_object',
+                Params={'Bucket': required_env_vars["WASABI_BUCKET"], 'Key': user_file_name},
+                ExpiresIn=3600
+            )
         )
         
-        # Generate player URL if supported
-        player_url = generate_player_url(file_name, presigned_url)
+        await message.reply_text(
+            f"Download link for {filename}:\n\n{presigned_url}\n\n"
+            "This link will expire in 1 hour."
+        )
         
-        response_text = f"📥 Download ready for: {file_name}\n⏰ Link expires: 24 hours\n\n{presigned_url}"
-        
-        if player_url:
-            response_text += f"\n\n🎬 Web Player: {player_url}"
-        
-        await status_message.edit_text(response_text)
-
-    except botocore.exceptions.ClientError as e:
-        error_code = e.response['Error']['Code']
-        if error_code == '404':
-            await status_message.edit_text("File not found.")
-        else:
-            await status_message.edit_text(f"S3 Error: {str(e)}")
     except Exception as e:
-        logger.error(f"Download error: {e}")
-        await status_message.edit_text(f"Error: {str(e)}")
+        await message.reply_text(f"Error generating download link: {str(e)}")
 
 @app.on_message(filters.command("play"))
 async def play_file(client, message: Message):
-    if is_rate_limited(message.from_user.id):
-        await message.reply_text("Too many requests. Please try again in a minute.")
+    if s3_client is None:
+        await message.reply_text("Wasabi storage is not available. Use /status to check connection.")
         return
         
     try:
@@ -413,11 +612,29 @@ async def play_file(client, message: Message):
         user_folder = get_user_folder(message.from_user.id)
         user_file_name = f"{user_folder}/{filename}"
         
+        # Check if file exists
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                thread_pool,
+                partial(
+                    s3_client.head_object,
+                    Bucket=required_env_vars["WASABI_BUCKET"],
+                    Key=user_file_name
+                )
+            )
+        except:
+            await message.reply_text("File not found.")
+            return
+        
         # Generate a presigned URL
-        presigned_url = s3_client.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': WASABI_BUCKET, 'Key': user_file_name},
-            ExpiresIn=86400
+        presigned_url = await asyncio.get_event_loop().run_in_executor(
+            thread_pool,
+            partial(
+                s3_client.generate_presigned_url,
+                'get_object',
+                Params={'Bucket': required_env_vars["WASABI_BUCKET"], 'Key': user_file_name},
+                ExpiresIn=86400
+            )
         )
         
         player_url = generate_player_url(filename, presigned_url)
@@ -431,69 +648,24 @@ async def play_file(client, message: Message):
             await message.reply_text("This file type doesn't support web playback.")
         
     except Exception as e:
-        await message.reply_text(f"File not found or error generating player link: {str(e)}")
-
-@app.on_message(filters.command("list"))
-async def list_files(client, message: Message):
-    if is_rate_limited(message.from_user.id):
-        await message.reply_text("Too many requests. Please try again in a minute.")
-        return
+        await message.reply_text(f"Error generating player link: {str(e)}")
         
-    try:
-        user_prefix = get_user_folder(message.from_user.id) + "/"
-        response = s3_client.list_objects_v2(
-            Bucket=WASABI_BUCKET, 
-            Prefix=user_prefix
-        )
-        
-        if 'Contents' not in response:
-            await message.reply_text("No files found")
-            return
-        
-        files = [obj['Key'].replace(user_prefix, "") for obj in response['Contents']]
-        files_list = "\n".join([f"• {file}" for file in files[:15]])  # Show first 15 files
-        
-        if len(files) > 15:
-            files_list += f"\n\n...and {len(files) - 15} more files"
-        
-        await message.reply_text(f"📁 Your files:\n\n{files_list}")
-    
-    except Exception as e:
-        logger.error(f"List files error: {e}")
-        await message.reply_text(f"Error: {str(e)}")
-
-@app.on_message(filters.command("delete"))
-async def delete_file(client, message: Message):
-    if is_rate_limited(message.from_user.id):
-        await message.reply_text("Too many requests. Please try again in a minute.")
-        return
-        
-    if len(message.command) < 2:
-        await message.reply_text("Usage: /delete <filename>")
-        return
-
-    file_name = " ".join(message.command[1:])
-    user_file_name = f"{get_user_folder(message.from_user.id)}/{file_name}"
-    
-    try:
-        # Delete file from Wasabi
-        s3_client.delete_object(
-            Bucket=WASABI_BUCKET,
-            Key=user_file_name
-        )
-        
-        await message.reply_text(f"✅ Deleted: {file_name}")
-    
-    except Exception as e:
-        logger.error(f"Delete error: {e}")
-        await message.reply_text(f"Error: {str(e)}")
-
 # -----------------------------
-# Flask Server Startup
+# Run Both Flask + Bot
 # -----------------------------
-print("Starting Flask server on port 8000...")
-Thread(target=run_flask, daemon=True).start()
-
 if __name__ == "__main__":
-    print("Starting Wasabi Storage Bot with Web Player...")
+    print("Testing Wasabi connection...")
+    diagnostics = test_wasabi_connection()
+    print(f"Connection diagnostics: {diagnostics}")
+    
+    if not diagnostics["connected"]:
+        print(f"❌ Wasabi connection failed: {diagnostics['error']}")
+        print("Please check your environment variables and try again.")
+    else:
+        print("✅ Wasabi connection successful!")
+    
+    print("Starting Flask server on port 8000...")
+    Thread(target=run_flask, daemon=True).start()
+
+    print("Starting Wasabi Storage Bot...")
     app.run()
