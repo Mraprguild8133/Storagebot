@@ -172,17 +172,6 @@ def sanitize_filename(filename):
 def get_user_folder(user_id):
     return f"user_{user_id}"
 
-def create_download_keyboard(presigned_url, player_url=None):
-    """Create inline keyboard with download option"""
-    keyboard = []
-    
-    if player_url:
-        keyboard.append([InlineKeyboardButton("🎬 Web Player", url=player_url)])
-    
-    keyboard.append([InlineKeyboardButton("📥 Direct Download", url=presigned_url)])
-    
-    return InlineKeyboardMarkup(keyboard)
-
 def create_progress_bar(percentage, length=20):
     """Create a visual progress bar"""
     filled = int(length * percentage / 100)
@@ -231,15 +220,16 @@ async def start_command(client, message: Message):
         "Use /download <filename> to download files\n"
         "Use /play <filename> to get web player links\n"
         "Use /list to see your files\n"
-        "Use /delete <filename> to remove files"
+        "Use /delete <filename> to remove files\n\n"
         "<b>⚡ Extreme Performance Features:</b>\n"
-                "• 2GB file size support\n"
-                "• Real-time speed monitoring with smoothing\n"
-                "• Memory optimization for large files\n"
-                "• TCP Keepalive for stable connections\n\n"
-                "<b>💎 Owner:</b> Mraprguild\n"
-                "<b>📧 Email:</b> mraprguild@gmail.com\n"
-                "<b>📱 Telegram:</b> @Sathishkumar33",
+        "• 2GB file size support\n"
+        "• Real-time speed monitoring with smoothing\n"
+        "• Memory optimization for large files\n"
+        "• TCP Keepalive for stable connections\n\n"
+        "<b>💎 Owner:</b> Mraprguild\n"
+        "<b>📧 Email:</b> mraprguild@gmail.com\n"
+        "<b>📱 Telegram:</b> @Sathishkumar33",
+        parse_mode="html"
     )
 
 @app.on_message(filters.document | filters.video | filters.audio | filters.photo)
@@ -336,9 +326,6 @@ async def upload_file_handler(client, message: Message):
         # Generate player URL if supported
         player_url = generate_player_url(file_name, presigned_url)
         
-        # Create keyboard with options
-        keyboard = create_download_keyboard(presigned_url, player_url)
-        
         # Get final file size
         if message.photo:
             file_size = os.path.getsize(file_path)
@@ -349,16 +336,14 @@ async def upload_file_handler(client, message: Message):
             f"📁 File: {file_name}\n"
             f"📦 Size: {humanbytes(file_size)}\n"
             f"⏱️ Time: {format_elapsed(total_time)}\n"
-            f"⏰ Link expires: 24 hours"
+            f"⏰ Link expires: 24 hours\n\n"
+            f"📥 Download URL: {presigned_url}"
         )
         
         if player_url:
             response_text += f"\n\n🎬 Web Player: {player_url}"
         
-        await status_message.edit_text(
-            response_text,
-            reply_markup=keyboard
-        )
+        await status_message.edit_text(response_text)
         
     except Exception as e:
         logger.error(f"Upload error: {e}")
@@ -396,18 +381,12 @@ async def download_file_handler(client, message: Message):
         # Generate player URL if supported
         player_url = generate_player_url(file_name, presigned_url)
         
-        # Create keyboard with options
-        keyboard = create_download_keyboard(presigned_url, player_url)
-        
-        response_text = f"📥 Download ready for: {file_name}\n⏰ Link expires: 24 hours"
+        response_text = f"📥 Download ready for: {file_name}\n⏰ Link expires: 24 hours\n\n{presigned_url}"
         
         if player_url:
             response_text += f"\n\n🎬 Web Player: {player_url}"
         
-        await status_message.edit_text(
-            response_text,
-            reply_markup=text
-        )
+        await status_message.edit_text(response_text)
 
     except botocore.exceptions.ClientError as e:
         error_code = e.response['Error']['Code']
