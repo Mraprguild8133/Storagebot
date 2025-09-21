@@ -141,11 +141,10 @@ def get_file_type(filename):
     return 'other'
 
 def generate_player_url(filename, presigned_url):
-    if not RENDER_URL or RENDER_URL == "http://localhost:8000":
+    if not RENDER_URL:
         return None
     file_type = get_file_type(filename)
     if file_type in ['video', 'audio', 'image']:
-        # Properly encode the URL
         encoded_url = base64.urlsafe_b64encode(presigned_url.encode()).decode().rstrip('=')
         return f"{RENDER_URL}/player/{file_type}/{encoded_url}"
     return None
@@ -232,16 +231,15 @@ async def start_command(client, message: Message):
         "Use /download <filename> to download files\n"
         "Use /play <filename> to get web player links\n"
         "Use /list to see your files\n"
-        "Use /delete <filename> to remove files\n\n"
+        "Use /delete <filename> to remove files"
         "<b>⚡ Extreme Performance Features:</b>\n"
-        "• 2GB file size support\n"
-        "• Real-time speed monitoring with smoothing\n"
-        "• Memory optimization for large files\n"
-        "• TCP Keepalive for stable connections\n\n"
-        "<b>💎 Owner:</b> Mraprguild\n"
-        "<b>📧 Email:</b> mraprguild@gmail.com\n"
-        "<b>📱 Telegram:</b> @Sathishkumar33",
-        parse_mode="HTML"
+                "• 2GB file size support\n"
+                "• Real-time speed monitoring with smoothing\n"
+                "• Memory optimization for large files\n"
+                "• TCP Keepalive for stable connections\n\n"
+                "<b>💎 Owner:</b> Mraprguild\n"
+                "<b>📧 Email:</b> mraprguild@gmail.com\n"
+                "<b>📱 Telegram:</b> @Sathishkumar33",
     )
 
 @app.on_message(filters.document | filters.video | filters.audio | filters.photo)
@@ -255,19 +253,8 @@ async def upload_file_handler(client, message: Message):
         await message.reply_text("Unsupported file type")
         return
 
-    # Get file name and size
-    if message.document:
-        file_name = message.document.file_name
-        file_size = message.document.file_size
-    elif message.video:
-        file_name = message.video.file_name if message.video.file_name else f"video_{message.video.file_id}.mp4"
-        file_size = message.video.file_size
-    elif message.audio:
-        file_name = message.audio.file_name if message.audio.file_name else f"audio_{message.audio.file_id}.mp3"
-        file_size = message.audio.file_size
-    elif message.photo:
-        file_name = f"photo_{message.photo.file_id}.jpg"
-        file_size = 0  # Will be set after download
+    # Get file size
+    file_size = media.file_size if hasattr(media, 'file_size') else 0
     
     # Check file size limit
     if file_size > MAX_FILE_SIZE:
@@ -325,7 +312,7 @@ async def upload_file_handler(client, message: Message):
     try:
         # Download file with progress callback
         file_path = await message.download(progress=progress_callback)
-        file_name = sanitize_filename(file_name)
+        file_name = sanitize_filename(os.path.basename(file_path))
         user_file_name = f"{get_user_folder(message.from_user.id)}/{file_name}"
         
         # Update status to uploading
@@ -364,6 +351,9 @@ async def upload_file_handler(client, message: Message):
             f"⏱️ Time: {format_elapsed(total_time)}\n"
             f"⏰ Link expires: 24 hours"
         )
+        
+        if player_url:
+            response_text += f"\n\n🎬 Web Player: {player_url}"
         
         await status_message.edit_text(
             response_text,
@@ -406,10 +396,10 @@ async def download_file_handler(client, message: Message):
         # Generate player URL if supported
         player_url = generate_player_url(file_name, presigned_url)
         
-        # Create keyboard with options
-        keyboard = create_download_keyboard(presigned_url, player_url)
-        
         response_text = f"📥 Download ready for: {file_name}\n⏰ Link expires: 24 hours"
+        
+        if player_url:
+            response_text += f"\n\n🎬 Web Player: {player_url}"
         
         await status_message.edit_text(
             response_text,
