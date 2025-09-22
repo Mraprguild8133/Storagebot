@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>GlassTech Media Player</title>
+  <title>Mraprguild Media Player</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <style>
     * {
@@ -630,7 +630,7 @@
     <div class="glass-effect"></div>
     
     <header>
-      <h1>GlassTech Media Player</h1>
+      <h1>Mraprguild Media Player</h1>
       <div class="subtitle">Immersive High-Tech Media Experience</div>
     </header>
     
