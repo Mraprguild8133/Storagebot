@@ -192,14 +192,43 @@ def sanitize_filename(filename):
 def get_user_folder(user_id):
     return f"user_{user_id}"
 
+# FIXED: Proper URL validation and formatting for Telegram buttons
 def safe_url(url: str) -> str:
-    return quote(url, safe=":/?&=%")
+    """Ensure URL is valid for Telegram inline buttons"""
+    if not url:
+        return ""
+    
+    # Validate URL format
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        logger.error(f"Invalid URL format: {url}")
+        return ""
+    
+    # Telegram requires URLs to start with http:// or https://
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    
+    # Ensure proper encoding
+    return quote(url, safe=":/?&=%-_+~!*'(),")
 
 def create_download_keyboard(presigned_url, player_url=None):
     keyboard = []
+    
+    # Validate URLs before creating buttons
+    valid_presigned_url = safe_url(presigned_url)
+    if not valid_presigned_url:
+        logger.error(f"Invalid presigned URL: {presigned_url}")
+        return None
+    
     if player_url:
-        keyboard.append([InlineKeyboardButton("🎬 Web Player", url=safe_url(player_url))])
-    keyboard.append([InlineKeyboardButton("📥 Direct Download", url=safe_url(presigned_url))])
+        valid_player_url = safe_url(player_url)
+        if valid_player_url:
+            keyboard.append([InlineKeyboardButton("🎬 Web Player", url=valid_player_url)])
+        else:
+            logger.warning(f"Invalid player URL: {player_url}")
+    
+    keyboard.append([InlineKeyboardButton("📥 Direct Download", url=valid_presigned_url)])
+    
     return InlineKeyboardMarkup(keyboard)
 
 def create_progress_bar(percentage, length=20):
@@ -261,6 +290,13 @@ def generate_presigned_url(s3_key, expiration=3600):
             Params={'Bucket': WASABI_BUCKET, 'Key': s3_key},
             ExpiresIn=expiration
         )
+        
+        # Validate the generated URL
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            logger.error(f"Generated invalid presigned URL: {url}")
+            return None
+            
         return url
     except Exception as e:
         logger.error(f"Error generating presigned URL: {e}")
@@ -357,6 +393,10 @@ async def handle_media(client, message: Message):
             
         # Generate shareable links
         presigned_url = generate_presigned_url(s3_key)
+        if not presigned_url:
+            await progress_msg.edit_text("❌ Failed to generate download link.")
+            return
+            
         player_url = generate_player_url(file_name, presigned_url)
         
         # Send success message
@@ -364,15 +404,17 @@ async def handle_media(client, message: Message):
         success_text = f"✅ Upload successful!\n\n📁 File: {sanitized_name}\n📦 Size: {file_size_str}"
         
         keyboard = create_download_keyboard(presigned_url, player_url)
-        await progress_msg.edit_text(success_text, reply_markup=keyboard)
+        if keyboard:
+            await progress_msg.edit_text(success_text, reply_markup=keyboard)
+        else:
+            # Fallback if keyboard creation fails
+            await progress_msg.edit_text(f"{success_text}\n\n📥 Download URL: {presigned_url}")
         
     except FloodWait as e:
         await message.reply_text(f"⏳ Flood wait: Please wait {e.value} seconds.")
     except Exception as e:
         logger.error(f"Error handling media: {e}")
         await message.reply_text("❌ An error occurred while processing your file.")
-
-# Add other handlers for /download, /list, /delete, etc.
 
 # -----------------------------
 # Flask Server Startup
