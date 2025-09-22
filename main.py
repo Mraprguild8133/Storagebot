@@ -205,8 +205,8 @@ def safe_url(url: str) -> str:
         return ""
     
     # Telegram requires URLs to start with http:// or https://
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
+    if not url.startswith(('http://www.', 'https://www.')):
+        url = 'https://www.' + url
     
     # Ensure proper encoding
     return quote(url, safe=":/?&=%-_+~!*'(),")
