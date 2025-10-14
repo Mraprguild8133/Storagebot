@@ -1,0 +1,1010 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mraprguild Cloud Player</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    
+    body {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: #fff;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 20px;
+      position: relative;
+      overflow-x: hidden;
+      transition: background 2s ease-in-out;
+    }
+    
+    /* Floating animation for background elements */
+    .floating-bg {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      z-index: -1;
+      overflow: hidden;
+    }
+    
+    .floating-element {
+      position: absolute;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.05); /* More transparent */
+      animation: float 20s infinite linear;
+    }
+    
+    .floating-element:nth-child(1) {
+      width: 80px;
+      height: 80px;
+      top: 10%;
+      left: 10%;
+      animation-delay: 0s;
+    }
+    
+    .floating-element:nth-child(2) {
+      width: 120px;
+      height: 120px;
+      top: 70%;
+      left: 80%;
+      animation-delay: -5s;
+    }
+    
+    .floating-element:nth-child(3) {
+      width: 60px;
+      height: 60px;
+      top: 50%;
+      left: 20%;
+      animation-delay: -10s;
+    }
+    
+    .floating-element:nth-child(4) {
+      width: 100px;
+      height: 100px;
+      top: 20%;
+      left: 70%;
+      animation-delay: -15s;
+    }
+    
+    @keyframes float {
+      0% {
+        transform: translate(0, 0) rotate(0deg);
+      }
+      25% {
+        transform: translate(20px, 30px) rotate(90deg);
+      }
+      50% {
+        transform: translate(0, 60px) rotate(180deg);
+      }
+      75% {
+        transform: translate(-20px, 30px) rotate(270deg);
+      }
+      100% {
+        transform: translate(0, 0) rotate(360deg);
+      }
+    }
+    
+    .container {
+      width: 100%;
+      max-width: 1200px;
+      background: rgba(25, 25, 35, 0.15); /* High transparency */
+      border-radius: 15px;
+      box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+      overflow: hidden;
+      backdrop-filter: blur(20px); /* Increased blur */
+      border: 1px solid rgba(255, 255, 255, 0.08); /* More transparent border */
+      transform: translateY(20px);
+      opacity: 0;
+      animation: fadeInUp 0.8s ease-out forwards;
+    }
+    
+    @keyframes fadeInUp {
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
+    }
+    
+    header {
+      padding: 20px;
+      text-align: center;
+      background: rgba(15, 15, 25, 0.15); /* High transparency */
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08); /* More transparent */
+      position: relative;
+      overflow: hidden;
+    }
+    
+    header::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.05), transparent); /* More transparent */
+      animation: shimmer 3s infinite;
+    }
+    
+    @keyframes shimmer {
+      0% {
+        left: -100%;
+      }
+      100% {
+        left: 100%;
+      }
+    }
+    
+    h1 {
+      font-size: 2.2rem;
+      margin-bottom: 5px;
+      background: linear-gradient(to right, #ffffff, #e0e0ff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      text-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+      animation: textGlow 3s infinite alternate;
+    }
+    
+    @keyframes textGlow {
+      from {
+        text-shadow: 0 0 5px rgba(255, 255, 255, 0.2);
+      }
+      to {
+        text-shadow: 0 0 15px rgba(255, 255, 255, 0.4), 0 0 20px rgba(79, 172, 254, 0.3);
+      }
+    }
+    
+    .subtitle {
+      color: rgba(255, 255, 255, 0.8); /* More visible text */
+      font-size: 1rem;
+      margin-bottom: 10px;
+    }
+    
+    .player-container {
+      padding: 25px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    
+    .media-display {
+      width: 100%;
+      max-width: 100%;
+      margin-bottom: 25px;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+      background: rgba(0, 0, 0, 0.15); /* High transparency */
+      position: relative;
+      border: 1px solid rgba(255, 255, 255, 0.08); /* More transparent */
+      transform: scale(0.95);
+      opacity: 0;
+      animation: scaleIn 0.6s ease-out 0.3s forwards;
+      min-height: 500px;
+    }
+    
+    @keyframes scaleIn {
+      to {
+        transform: scale(1);
+        opacity: 1;
+      }
+    }
+    
+    video, audio, img {
+      width: 100%;
+      display: block;
+      max-height: 80vh;
+      min-height: 500px;
+      object-fit: contain;
+    }
+    
+    .custom-audio-player {
+      width: 100%;
+      padding: 25px;
+      background: rgba(26, 26, 42, 0.15); /* High transparency */
+      border-radius: 10px;
+      position: relative;
+      border: 1px solid rgba(255, 255, 255, 0.08); /* More transparent */
+      min-height: 200px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    .custom-audio-player audio {
+      width: 100%;
+      max-width: 800px;
+    }
+    
+    /* Remove custom video controls */
+    .custom-video-controls {
+      display: none;
+    }
+    
+    .media-display:hover .custom-video-controls {
+      opacity: 0;
+    }
+    
+    .control-btn {
+      background: rgba(255, 255, 255, 0.08); /* High transparency */
+      border: 1px solid rgba(255, 255, 255, 0.12); /* More transparent */
+      color: white;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      backdrop-filter: blur(10px);
+    }
+    
+    .control-btn:hover {
+      background: rgba(255, 255, 255, 0.15); /* High transparency */
+      transform: scale(1.1);
+    }
+    
+    .control-btn i {
+      font-size: 16px;
+    }
+    
+    .media-info {
+      padding: 12px 15px;
+      background: rgba(30, 30, 45, 0.15); /* High transparency */
+      border-radius: 8px;
+      margin-bottom: 20px;
+      width: 100%;
+      font-size: 0.9rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border: 1px solid rgba(255, 255, 255, 0.08); /* More transparent */
+      transform: translateX(-20px);
+      opacity: 0;
+      animation: slideInRight 0.5s ease-out 0.5s forwards;
+    }
+    
+    @keyframes slideInRight {
+      to {
+        transform: translateX(0);
+        opacity: 1;
+      }
+    }
+    
+    .media-type {
+      background: rgba(79, 172, 254, 0.2); /* High transparency */
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: bold;
+      border: 1px solid rgba(255, 255, 255, 0.12); /* More transparent */
+      animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+      0% {
+        box-shadow: 0 0 0 0 rgba(79, 172, 254, 0.3);
+      }
+      70% {
+        box-shadow: 0 0 0 10px rgba(79, 172, 254, 0);
+      }
+      100% {
+        box-shadow: 0 0 0 0 rgba(79, 172, 254, 0);
+      }
+    }
+    
+    .media-category {
+      background: rgba(255, 159, 28, 0.2); /* High transparency */
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: bold;
+      border: 1px solid rgba(255, 255, 255, 0.12); /* More transparent */
+    }
+    
+    .controls {
+      display: flex;
+      gap: 12px;
+      margin-top: 15px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    
+    .btn {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 20px;
+      background: rgba(255, 255, 255, 0.08); /* High transparency */
+      color: white;
+      text-decoration: none;
+      border-radius: 50px;
+      font-weight: 600;
+      transition: all 0.3s ease;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+      cursor: pointer;
+      border: 1px solid rgba(255, 255, 255, 0.12); /* More transparent */
+      backdrop-filter: blur(10px);
+      transform: translateY(10px);
+      opacity: 0;
+      animation: fadeInUp 0.5s ease-out 0.7s forwards;
+    }
+    
+    .btn:nth-child(2) {
+      animation-delay: 0.8s;
+    }
+    
+    .btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+      background: rgba(255, 255, 255, 0.15); /* High transparency */
+    }
+    
+    .btn i {
+      font-size: 1rem;
+    }
+    
+    .loading {
+      padding: 40px;
+      text-align: center;
+      color: rgba(255, 255, 255, 0.8); /* More visible text */
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 400px;
+    }
+    
+    .loading i {
+      font-size: 3rem;
+      margin-bottom: 20px;
+      color: rgba(79, 172, 254, 0.7);
+    }
+    
+    .loading p {
+      font-size: 1.2rem;
+    }
+    
+    .error {
+      padding: 40px;
+      text-align: center;
+      background: rgba(200, 60, 60, 0.15); /* High transparency */
+      border-radius: 10px;
+      margin: 20px 0;
+      border: 1px solid rgba(255, 100, 100, 0.2); /* More transparent */
+      min-height: 300px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    .error i {
+      font-size: 3rem;
+      margin-bottom: 20px;
+      color: rgba(255, 107, 107, 0.7);
+    }
+    
+    .error h2 {
+      font-size: 1.5rem;
+      margin-bottom: 10px;
+    }
+    
+    footer {
+      text-align: center;
+      padding: 20px;
+      color: rgba(255, 255, 255, 0.8); /* More visible text */
+      font-size: 0.9rem;
+      border-top: 1px solid rgba(255, 255, 255, 0.08); /* More transparent */
+    }
+    
+    /* Player options modal */
+    .modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.4); /* High transparency */
+      z-index: 1000;
+      justify-content: center;
+      align-items: center;
+      animation: fadeIn 0.3s ease-out;
+    }
+    
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+      }
+      to {
+        opacity: 1;
+      }
+    }
+    
+    .modal-content {
+      background: rgba(35, 35, 50, 0.15); /* High transparency */
+      padding: 25px;
+      border-radius: 15px;
+      width: 90%;
+      max-width: 600px;
+      box-shadow: 0 5px 25px rgba(0, 0, 0, 0.2);
+      backdrop-filter: blur(25px); /* Increased blur */
+      border: 1px solid rgba(255, 255, 255, 0.08); /* More transparent */
+      transform: scale(0.9);
+      animation: scaleIn 0.3s ease-out forwards;
+    }
+    
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    
+    .modal-title {
+      font-size: 1.5rem;
+      background: linear-gradient(to right, #ffffff, #e0e0ff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    
+    .close-modal {
+      background: none;
+      border: none;
+      color: rgba(255, 255, 255, 0.8); /* More visible */
+      font-size: 1.5rem;
+      cursor: pointer;
+      transition: transform 0.2s ease;
+    }
+    
+    .close-modal:hover {
+      transform: rotate(90deg);
+    }
+    
+    .player-options {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: 12px;
+      margin: 20px 0;
+    }
+    
+    .player-option {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 15px;
+      background: rgba(25, 25, 35, 0.15); /* High transparency */
+      border-radius: 10px;
+      transition: all 0.3s ease;
+      cursor: pointer;
+      border: 1px solid rgba(255, 255, 255, 0.08); /* More transparent */
+    }
+    
+    .player-option:hover {
+      transform: translateY(-3px);
+      background: rgba(35, 35, 50, 0.25); /* Slightly less transparent on hover */
+      box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+    }
+    
+    .player-icon {
+      font-size: 2rem;
+      margin-bottom: 10px;
+    }
+    
+    .player-name {
+      font-size: 0.9rem;
+      text-align: center;
+    }
+    
+    .download-info {
+      margin-top: 20px;
+      padding: 15px;
+      background: rgba(30, 30, 45, 0.15); /* High transparency */
+      border-radius: 10px;
+      font-size: 0.9rem;
+      border: 1px solid rgba(255, 255, 255, 0.08); /* More transparent */
+    }
+    
+    @media (max-width: 600px) {
+      .container {
+        border-radius: 10px;
+        max-width: 95%;
+      }
+      
+      h1 {
+        font-size: 1.8rem;
+      }
+      
+      .player-container {
+        padding: 15px;
+      }
+      
+      .controls {
+        flex-direction: column;
+        width: 100%;
+      }
+      
+      .btn {
+        width: 100%;
+        justify-content: center;
+      }
+      
+      .player-options {
+        grid-template-columns: repeat(3, 1fr);
+      }
+      
+      .media-display {
+        min-height: 300px;
+      }
+      
+      video, audio, img {
+        min-height: 300px;
+        max-height: 60vh;
+      }
+    }
+    
+    @media (max-width: 400px) {
+      .player-options {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- Floating background elements -->
+  <div class="floating-bg">
+    <div class="floating-element"></div>
+    <div class="floating-element"></div>
+    <div class="floating-element"></div>
+    <div class="floating-element"></div>
+  </div>
+  
+  <div class="container">
+    <header>
+      <h1>Mraprguild Cloud Player</h1>
+      <div class="subtitle">Stream your media files seamlessly</div>
+    </header>
+    
+    <div class="player-container">
+      <div class="media-info">
+        <div class="media-url">Content from secure source</div>
+        <div class="media-type">Loading...</div>
+        <div class="media-category">Detecting...</div>
+      </div>
+      
+      <div id="player" class="media-display">
+        <div class="loading">
+          <i class="fas fa-spinner fa-spin"></i>
+          <p>Loading your media content...</p>
+        </div>
+      </div>
+      
+      <div class="controls">
+        <a id="downloadBtn" download class="btn">
+          <i class="fas fa-download"></i>Download
+        </a>
+        <button id="playerOptionsBtn" class="btn">
+          <i class="fas fa-play-circle"></i>Open in Player
+        </button>
+      </div>
+    </div>
+    
+    <footer>
+      <p>Mraprguild Cloud Player &copy; 2025 | Secure Media Streaming</p>
+    </footer>
+  </div>
+
+  <!-- Player Options Modal -->
+  <div id="playerModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title">Open With External Player</h2>
+        <button class="close-modal">&times;</button>
+      </div>
+      <p>Select your preferred media player to open this content:</p>
+      
+      <div class="player-options">
+        <div class="player-option" data-player="vlc">
+          <div class="player-icon">
+            <i class="fas fa-play-circle"></i>
+          </div>
+          <div class="player-name">VLC Player</div>
+        </div>
+        
+        <div class="player-option" data-player="mx">
+          <div class="player-icon">
+            <i class="fas fa-play-circle"></i>
+          </div>
+          <div class="player-name">MX Player</div>
+        </div>
+        
+        <div class="player-option" data-player="kmplayer">
+          <div class="player-icon">
+            <i class="fas fa-play-circle"></i>
+          </div>
+          <div class="player-name">KMPlayer</div>
+        </div>
+        
+        <div class="player-option" data-player="playit">
+          <div class="player-icon">
+            <i class="fas fa-play-circle"></i>
+          </div>
+          <div class="player-name">Playit</div>
+        </div>
+        
+        <div class="player-option" data-player="potplayer">
+          <div class="player-icon">
+            <i class="fas fa-play-circle"></i>
+          </div>
+          <div class="player-name">PotPlayer</div>
+        </div>
+        
+        <div class="player-option" data-player="gomplayer">
+          <div class="player-icon">
+            <i class="fas fa-play-circle"></i>
+          </div>
+          <div class="player-name">GOM Player</div>
+        </div>
+        
+        <div class="player-option" data-player="browser">
+          <div class="player-icon">
+            <i class="fas fa-window-restore"></i>
+          </div>
+          <div class="player-name">Browser Player</div>
+        </div>
+        
+        <div class="player-option" data-player="download">
+          <div class="player-icon">
+            <i class="fas fa-download"></i>
+          </div>
+          <div class="player-name">Download</div>
+        </div>
+      </div>
+      
+      <div class="download-info">
+        <p><strong>Note:</strong> For external players to work, you need to have the app installed on your device.</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let mediaUrl = '';
+    let mediaType = '';
+    let mediaElement = null;
+    let mediaCategory = '';
+    let backgroundInterval;
+    
+    // Color themes for automatic background changes
+    const colorThemes = [
+      'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+      'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)',
+      'linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)',
+      'linear-gradient(135deg, #fa709a 0%, #fee140 100%)',
+      'linear-gradient(135deg, #a8edea 0%, #fed6e3 100%)',
+      'linear-gradient(135deg, #d299c2 0%, #fef9d7 100%)',
+      'linear-gradient(135deg, #89f7fe 0%, #66a6ff 100%)',
+      'linear-gradient(135deg, #fd746c 0%, #ff9068 100%)'
+    ];
+    
+    // Function to start automatic background color changes
+    function startBackgroundRotation() {
+      let currentIndex = 0;
+      
+      // Set up interval to change background every 10 seconds
+      backgroundInterval = setInterval(() => {
+        currentIndex = (currentIndex + 1) % colorThemes.length;
+        document.body.style.background = colorThemes[currentIndex];
+      }, 10000); // 10 seconds
+    }
+    
+    function decodeBase64Url(encoded) {
+      try {
+        let pad = encoded.length % 4;
+        if (pad) encoded += "=".repeat(4 - pad);
+        return atob(encoded.replace(/-/g, '+').replace(/_/g, '/'));
+      } catch { return null; }
+    }
+    
+    // Function to detect media category based on filename
+    function detectMediaCategory(filename) {
+      if (!filename) return 'default';
+      
+      const lowerFilename = filename.toLowerCase();
+      
+      // Keywords for different categories
+      const movieKeywords = [
+        'movie', 'film', 'cinema', 'theatre', 'bluray', 'dvdrip', 'hdrip',
+        '1080p', '720p', '4k', 'brrip', 'webdl', 'hdcam'
+      ];
+      
+      const webseriesKeywords = [
+        'series', 'season', 'episode', 's01', 's02', 's03', 's1e', 's2e',
+        'web series', 'tv series', 'netflix', 'amazon', 'hulu', 'hbo',
+        'disney+', 'prime video'
+      ];
+      
+      const animeKeywords = [
+        'anime', 'manga', 'animation', 'japanese', 'subbed', 'dubbed',
+        'subtitle', 'naruto', 'one piece', 'attack on titan', 'dragon ball',
+        'bleach', 'my hero academia', 'demon slayer', 'studio ghibli'
+      ];
+      
+      // Check for movie keywords
+      if (movieKeywords.some(keyword => lowerFilename.includes(keyword))) {
+        return 'movie';
+      }
+      
+      // Check for webseries keywords
+      if (webseriesKeywords.some(keyword => lowerFilename.includes(keyword))) {
+        return 'webseries';
+      }
+      
+      // Check for anime keywords
+      if (animeKeywords.some(keyword => lowerFilename.includes(keyword))) {
+        return 'anime';
+      }
+      
+      return 'default';
+    }
+    
+    function displayMedia() {
+      const parts = window.location.pathname.split("/");
+      const type = parts[2];
+      const encoded = parts[3];
+      const url = decodeBase64Url(encoded);
+      
+      const playerEl = document.getElementById("player");
+      const mediaTypeEl = document.querySelector(".media-type");
+      const mediaCategoryEl = document.querySelector(".media-category");
+      const downloadBtn = document.getElementById("downloadBtn");
+      
+      if (!url) {
+        playerEl.innerHTML = `
+          <div class="error">
+            <i class="fas fa-exclamation-circle"></i>
+            <h2>Invalid or Expired Link</h2>
+            <p>The media link is invalid or may have expired.</p>
+          </div>
+        `;
+        mediaTypeEl.textContent = "Invalid";
+        mediaCategoryEl.textContent = "Unknown";
+        downloadBtn.style.display = "none";
+        return;
+      }
+      
+      // Store the URL and type for later use
+      mediaUrl = url;
+      mediaType = type;
+      
+      // Extract filename from URL for category detection
+      const filename = url.split('/').pop().split('?')[0];
+      mediaCategory = detectMediaCategory(filename);
+      
+      // Set media type badge
+      mediaTypeEl.textContent = type.charAt(0).toUpperCase() + type.slice(1);
+      
+      // Set media category badge
+      mediaCategoryEl.textContent = mediaCategory.charAt(0).toUpperCase() + mediaCategory.slice(1);
+      
+      // Set button URL
+      downloadBtn.href = url;
+      
+      // Display the appropriate media player
+      let html = "";
+      if (type === "video") {
+        html = `
+          <video id="videoElement" controls autoplay>
+            <source src="${url}" type="video/mp4">
+            Your browser does not support the video tag.
+          </video>
+        `;
+      } else if (type === "audio") {
+        html = `
+          <div class="custom-audio-player">
+            <audio id="audioElement" controls autoplay>
+              <source src="${url}" type="audio/mpeg">
+              Your browser does not support the audio element.
+            </audio>
+          </div>
+        `;
+      } else if (type === "image") {
+        html = `<img src="${url}" alt="Cloud Image">`;
+      } else {
+        html = `
+          <div class="error">
+            <i class="fas fa-times-circle"></i>
+            <h2>Unsupported Media Type</h2>
+            <p>Type: ${type} is not supported.</p>
+          </div>
+        `;
+      }
+      
+      // Add a small delay to simulate loading (for demo purposes)
+      setTimeout(() => {
+        playerEl.innerHTML = html;
+        
+        // Set up media controls if it's video
+        if (type === "video") {
+          mediaElement = document.getElementById("videoElement");
+        }
+      }, 1000);
+    }
+    
+    // Open in VLC Player
+    function openInVLCPlayer(url) {
+      // VLC uses a custom URL scheme for streaming
+      const vlcUrl = 'vlc://' + url;
+      window.location.href = vlcUrl;
+      
+      // Fallback in case VLC is not installed
+      setTimeout(function() {
+        if (!document.webkitHidden && !document.hidden) {
+          alert('VLC Player not found. Please install VLC or try another player.');
+        }
+      }, 1000);
+    }
+    
+    // Open in MX Player
+    function openInMXPlayer(url) {
+      // MX Player uses a custom intent system
+      const mxUrl = `intent:${url}#Intent;package=com.mxtech.videoplayer.ad;S.title=Cloud%20Player;end`;
+      window.location.href = mxUrl;
+      
+      // Fallback in case MX Player is not installed
+      setTimeout(function() {
+        if (!document.webkitHidden && !document.hidden) {
+          alert('MX Player not found. Please install MX Player or try another player.');
+        }
+      }, 1000);
+    }
+    
+    // Open in KMPlayer
+    function openInKMPlayer(url) {
+      // KMPlayer uses a custom URL scheme
+      const kmpUrl = 'kmplayer://' + url;
+      window.location.href = kmpUrl;
+      
+      // Fallback in case KMPlayer is not installed
+      setTimeout(function() {
+        if (!document.webkitHidden && !document.hidden) {
+          alert('KMPlayer not found. Please install KMPlayer or try another player.');
+        }
+      }, 1000);
+    }
+    
+    // Open in Playit
+    function openInPlayit(url) {
+      // Playit uses a custom URL scheme
+      const playitUrl = 'playit://play/' + encodeURIComponent(url);
+      window.location.href = playitUrl;
+      
+      // Fallback in case Playit is not installed
+      setTimeout(function() {
+        if (!document.webkitHidden && !document.hidden) {
+          alert('Playit not found. Please install Playit or try another player.');
+        }
+      }, 1000);
+    }
+    
+    // Open in PotPlayer
+    function openInPotPlayer(url) {
+      // PotPlayer uses a custom URL scheme
+      const potUrl = 'potplayer://' + url;
+      window.location.href = potUrl;
+      
+      // Fallback in case PotPlayer is not installed
+      setTimeout(function() {
+        if (!document.webkitHidden && !document.hidden) {
+          alert('PotPlayer not found. Please install PotPlayer or try another player.');
+        }
+      }, 1000);
+    }
+    
+    // Open in GOM Player
+    function openInGOMPlayer(url) {
+      // GOM Player uses a custom URL scheme
+      const gomUrl = 'gomplayer://' + url;
+      window.location.href = gomUrl;
+      
+      // Fallback in case GOM Player is not installed
+      setTimeout(function() {
+        if (!document.webkitHidden && !document.hidden) {
+          alert('GOM Player not found. Please install GOM Player or try another player.');
+        }
+      }, 1000);
+    }
+    
+    // Download media
+    function downloadMedia(url) {
+      const downloadLink = document.createElement('a');
+      downloadLink.href = url;
+      downloadLink.download = url.split('/').pop();
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      document.body.removeChild(downloadLink);
+    }
+    
+    // Handle player selection
+    function handlePlayerSelection(player) {
+      if (!mediaUrl) return;
+      
+      switch(player) {
+        case 'vlc':
+          openInVLCPlayer(mediaUrl);
+          break;
+        case 'mx':
+          openInMXPlayer(mediaUrl);
+          break;
+        case 'kmplayer':
+          openInKMPlayer(mediaUrl);
+          break;
+        case 'playit':
+          openInPlayit(mediaUrl);
+          break;
+        case 'potplayer':
+          openInPotPlayer(mediaUrl);
+          break;
+        case 'gomplayer':
+          openInGOMPlayer(mediaUrl);
+          break;
+        case 'browser':
+          // Already playing in browser, do nothing
+          break;
+        case 'download':
+          downloadMedia(mediaUrl);
+          break;
+      }
+    }
+    
+    // Initialize the player when page loads
+    document.addEventListener("DOMContentLoaded", function() {
+      // Start automatic background color rotation
+      startBackgroundRotation();
+      
+      displayMedia();
+      
+      // Set up player options modal
+      const modal = document.getElementById('playerModal');
+      const openModalBtn = document.getElementById('playerOptionsBtn');
+      const closeModalBtn = document.querySelector('.close-modal');
+      const playerOptions = document.querySelectorAll('.player-option');
+      
+      // Open modal when button is clicked
+      openModalBtn.addEventListener('click', function() {
+        modal.style.display = 'flex';
+      });
+      
+      // Close modal when X is clicked
+      closeModalBtn.addEventListener('click', function() {
+        modal.style.display = 'none';
+      });
+      
+      // Close modal when clicking outside content
+      window.addEventListener('click', function(event) {
+        if (event.target === modal) {
+          modal.style.display = 'none';
+        }
+      });
+      
+      // Handle player selection
+      playerOptions.forEach(option => {
+        option.addEventListener('click', function() {
+          const player = this.getAttribute('data-player');
+          handlePlayerSelection(player);
+          modal.style.display = 'none';
+        });
+      });
+    });
+  </script>
+</body>
+</html>
